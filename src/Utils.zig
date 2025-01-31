@@ -14,7 +14,7 @@ pub inline fn saturating_sub(comptime T: type, a: T, b: T) T {
     const result = @subWithOverflow(a, b);
 
     if (result[1] == 1) {
-        return std.math.minInt(T);
+        return 0;
     }
 
     return result[0];
