@@ -2,25 +2,12 @@ const std = @import("std");
 const Record = @import("Record.zig");
 const HashMap = @import("HashMap.zig");
 const Utils = @import("Utils.zig");
+const Error = @import("Error.zig");
+const Config = @import("Config.zig");
 const xxhash = std.hash.XxHash64.hash;
 const expect = std.testing.expect;
 
-fn call_get(hash_map: HashMap, buffer: []u8) ![]u8 {
-    const hash_length = @sizeOf(u64);
-    const buffer_length = buffer.len;
-    const key_length = Utils.saturating_sub(usize, buffer_length, hash_length);
-
-    if (buffer_length < hash_length or key_length == 0) {
-        return error.NotEnoughBytes;
-    }
-
-    const hash = std.mem.readInt(u64, buffer[0..hash_length], .little);
-    const key = buffer[hash_length..];
-
-    return hash_map.get(hash, key);
-}
-
-fn call_put(hash_map: HashMap, buffer: []u8) !void {
+fn call_put(hash_map: HashMap, buffer: []u8) Error.Result(void) {
     const hash_length = @sizeOf(u64);
     const length_length = @sizeOf(u32);
     const ttl_length = @sizeOf(u32);
@@ -28,7 +15,7 @@ fn call_put(hash_map: HashMap, buffer: []u8) !void {
     const remaining_length = Utils.saturating_sub(usize, buffer_length, hash_length + ttl_length);
 
     if (buffer_length < hash_length or remaining_length < (2 * length_length + 2)) {
-        return error.NotEnoughBytes;
+        return .{ .err = @intFromEnum(Error.Error.NotEnoughBytes) };
     }
 
     const hash = std.mem.readInt(u64, buffer[0..hash_length], .little);
@@ -53,13 +40,28 @@ fn call_put(hash_map: HashMap, buffer: []u8) !void {
     return hash_map.put(hash, key, value, ttl);
 }
 
-fn call_del(hash_map: HashMap, buffer: []u8) !void {
+fn call_get(hash_map: HashMap, buffer: []u8) Error.Result([]u8) {
     const hash_length = @sizeOf(u64);
     const buffer_length = buffer.len;
     const key_length = Utils.saturating_sub(usize, buffer_length, hash_length);
 
     if (buffer_length < hash_length or key_length == 0) {
-        return error.NotEnoughBytes;
+        return .{ .err = @intFromEnum(Error.Error.NotEnoughBytes) };
+    }
+
+    const hash = std.mem.readInt(u64, buffer[0..hash_length], .little);
+    const key = buffer[hash_length..];
+
+    return hash_map.get(hash, key);
+}
+
+fn call_del(hash_map: HashMap, buffer: []u8) Error.Result(void) {
+    const hash_length = @sizeOf(u64);
+    const buffer_length = buffer.len;
+    const key_length = Utils.saturating_sub(usize, buffer_length, hash_length);
+
+    if (buffer_length < hash_length or key_length == 0) {
+        return .{ .err = @intFromEnum(Error.Error.NotEnoughBytes) };
     }
 
     const hash = std.mem.readInt(u64, buffer[0..hash_length], .little);
@@ -68,106 +70,174 @@ fn call_del(hash_map: HashMap, buffer: []u8) !void {
     return hash_map.del(hash, key);
 }
 
-pub fn call(hash_map: HashMap, buffer: []u8) ![]u8 {
-    return switch (buffer[0]) {
-        0 => call_get(hash_map, buffer[1..]),
+pub fn call(hash_map: HashMap, input_buffer: []u8, output_buffer: []u8) []u8 {
+    return switch (input_buffer[0]) {
+        0 => block: {
+            const result = call_get(hash_map, input_buffer[1..]);
+
+            if (result == .ok) {
+                const value = result.ok;
+
+                output_buffer[0] = 1;
+                @memcpy(output_buffer[1 .. 1 + value.len], value);
+
+                break :block output_buffer[0 .. 1 + value.len];
+            } else {
+                output_buffer[0] = 0;
+                output_buffer[1] = result.err;
+
+                break :block output_buffer[0..2];
+            }
+        },
         1 => block: {
-            try call_put(hash_map, buffer[1..]);
-            break :block error.NoReturn;
+            const result = call_put(hash_map, input_buffer[1..]);
+
+            if (result == .ok) {
+                output_buffer[0] = 1;
+
+                break :block output_buffer[0..1];
+            } else {
+                output_buffer[0] = 0;
+                output_buffer[1] = result.err;
+
+                break :block output_buffer[0..2];
+            }
         },
         2 => block: {
-            try call_del(hash_map, buffer[1..]);
-            break :block error.NoReturn;
+            const result = call_del(hash_map, input_buffer[1..]);
+
+            if (result == .ok) {
+                output_buffer[0] = 1;
+
+                break :block output_buffer[0..1];
+            } else {
+                output_buffer[0] = 0;
+                output_buffer[1] = result.err;
+
+                break :block output_buffer[0..2];
+            }
         },
-        else => error.CommandNotFound,
+        else => block: {
+            output_buffer[0] = 0;
+            output_buffer[1] = @intFromEnum(Error.Error.CommandNotFound);
+
+            break :block output_buffer[0..2];
+        },
     };
 }
 
-// test "put" {
-//     std.debug.print("PUT\n", .{});
+test "put" {
+    std.debug.print("PUT\n", .{});
 
-//     const allocator = std.testing.allocator;
-//     const hash_map = try HashMap.init(allocator, 1024);
-//     defer hash_map.free();
+    const config = Config{
+        .port = 3000,
+        .record_count = 65536,
+        .key_max_length = 1048576,
+        .value_max_length = 67108864,
+    };
 
-//     const key = @as([]u8, @constCast("Hello, world!"));
-//     const value = @as([]u8, @constCast("This is me, Mario!"));
-//     const hash = xxhash(0, key);
-//     const ttl = @as(u32, @intCast(std.time.timestamp())) + 1;
+    const allocator = std.testing.allocator;
+    const hash_map = try HashMap.init(allocator, config);
+    defer hash_map.free();
 
-//     const buffer = try allocator.alloc(u8, 1 + 8 + 4 + 4 + key.len + 4 + value.len);
-//     defer allocator.free(buffer);
+    const key = @as([]u8, @constCast("Hello, world!"));
+    const value = @as([]u8, @constCast("This is me, Mario!"));
+    const hash = xxhash(0, key);
+    const ttl: u32 = 1;
 
-//     buffer[0] = 1;
+    const input_buffer = try allocator.alloc(u8, 1 + 8 + 4 + 4 + key.len + 4 + value.len);
+    const output_buffer = try allocator.alloc(u8, 1 + value.len);
+    defer allocator.free(input_buffer);
+    defer allocator.free(output_buffer);
 
-//     @memcpy(buffer[1..9], std.mem.toBytes(hash)[0..]);
-//     @memcpy(buffer[9..13], std.mem.toBytes(ttl)[0..]);
-//     @memcpy(buffer[13..17], std.mem.toBytes(@as(u32, @intCast(key.len)))[0..]);
-//     @memcpy(buffer[17 .. 17 + key.len], key);
-//     @memcpy(buffer[17 + key.len .. 17 + key.len + 4], std.mem.toBytes(@as(u32, @intCast(value.len)))[0..]);
-//     @memcpy(buffer[17 + key.len + 4 .. 17 + key.len + 4 + value.len], value);
+    input_buffer[0] = 1;
 
-//     std.debug.print("buffer: {any}\n", .{buffer});
+    @memcpy(input_buffer[1..9], std.mem.toBytes(hash)[0..]);
+    @memcpy(input_buffer[9..13], std.mem.toBytes(ttl)[0..]);
+    @memcpy(input_buffer[13..17], std.mem.toBytes(@as(u32, @intCast(key.len)))[0..]);
+    @memcpy(input_buffer[17 .. 17 + key.len], key);
+    @memcpy(input_buffer[17 + key.len .. 17 + key.len + 4], std.mem.toBytes(@as(u32, @intCast(value.len)))[0..]);
+    @memcpy(input_buffer[17 + key.len + 4 .. 17 + key.len + 4 + value.len], value);
 
-//     const result = call(hash_map, buffer);
+    std.debug.print("buffer: {any}\n", .{input_buffer});
 
-//     std.debug.print("result: {any}\n", .{result});
-// }
+    const result = call(hash_map, input_buffer, output_buffer);
 
-// test "get" {
-//     std.debug.print("GET\n", .{});
+    std.debug.print("result: {any}\n", .{result});
+}
 
-//     const allocator = std.testing.allocator;
-//     const hash_map = try HashMap.init(allocator, 1024);
-//     defer hash_map.free();
+test "get" {
+    std.debug.print("GET\n", .{});
 
-//     const key = @as([]u8, @constCast("Hello, world!"));
-//     const value = @as([]u8, @constCast("This is me, Mario!"));
-//     const hash = xxhash(0, key);
-//     const ttl = @as(u32, @intCast(std.time.timestamp())) + 1;
+    const config = Config{
+        .port = 3000,
+        .record_count = 65536,
+        .key_max_length = 1048576,
+        .value_max_length = 67108864,
+    };
 
-//     const buffer = try allocator.alloc(u8, 1 + 8 + key.len);
-//     defer allocator.free(buffer);
+    const allocator = std.testing.allocator;
+    const hash_map = try HashMap.init(allocator, config);
+    defer hash_map.free();
 
-//     buffer[0] = 0;
+    const key = @as([]u8, @constCast("Hello, world!"));
+    const value = @as([]u8, @constCast("This is me, Mario!"));
+    const hash = xxhash(0, key);
+    const ttl: u32 = 1;
 
-//     @memcpy(buffer[1..9], std.mem.toBytes(hash)[0..]);
-//     @memcpy(buffer[9..], key);
+    const input_buffer = try allocator.alloc(u8, 1 + 8 + key.len);
+    const output_buffer = try allocator.alloc(u8, 1 + value.len);
+    defer allocator.free(input_buffer);
+    defer allocator.free(output_buffer);
 
-//     std.debug.print("buffer: {any}\n", .{buffer});
+    input_buffer[0] = 0;
 
-//     try hash_map.put(hash, key, value, ttl);
+    @memcpy(input_buffer[1..9], std.mem.toBytes(hash)[0..]);
+    @memcpy(input_buffer[9..], key);
 
-//     const result = call(hash_map, buffer);
+    std.debug.print("buffer: {any}\n", .{input_buffer});
 
-//     std.debug.print("result: {any}\n", .{result});
-// }
+    _ = hash_map.put(hash, key, value, ttl);
 
-// test "del" {
-//     std.debug.print("DEL\n", .{});
+    const result = call(hash_map, input_buffer, output_buffer);
 
-//     const allocator = std.testing.allocator;
-//     const hash_map = try HashMap.init(allocator, 1024);
-//     defer hash_map.free();
+    std.debug.print("result: {any}\n", .{result});
+}
 
-//     const key = @as([]u8, @constCast("Hello, world!"));
-//     const value = @as([]u8, @constCast("This is me, Mario!"));
-//     const hash = xxhash(0, key);
-//     const ttl = @as(u32, @intCast(std.time.timestamp())) + 1;
+test "del" {
+    std.debug.print("DEL\n", .{});
 
-//     const buffer = try allocator.alloc(u8, 1 + 8 + key.len);
-//     defer allocator.free(buffer);
+    const config = Config{
+        .port = 3000,
+        .record_count = 65536,
+        .key_max_length = 1048576,
+        .value_max_length = 67108864,
+    };
 
-//     buffer[0] = 2;
+    const allocator = std.testing.allocator;
+    const hash_map = try HashMap.init(allocator, config);
+    defer hash_map.free();
 
-//     @memcpy(buffer[1..9], std.mem.toBytes(hash)[0..]);
-//     @memcpy(buffer[9..], key);
+    const key = @as([]u8, @constCast("Hello, world!"));
+    const value = @as([]u8, @constCast("This is me, Mario!"));
+    const hash = xxhash(0, key);
+    const ttl: u32 = 1;
 
-//     std.debug.print("buffer: {any}\n", .{buffer});
+    const input_buffer = try allocator.alloc(u8, 1 + 8 + key.len);
+    const output_buffer = try allocator.alloc(u8, 1 + value.len);
+    defer allocator.free(input_buffer);
+    defer allocator.free(output_buffer);
 
-//     try hash_map.put(hash, key, value, ttl);
+    input_buffer[0] = 2;
 
-//     const result = call(hash_map, buffer);
+    @memcpy(input_buffer[1..9], std.mem.toBytes(hash)[0..]);
+    @memcpy(input_buffer[9..], key);
 
-//     std.debug.print("result: {any}\n", .{result});
-// }
+    std.debug.print("buffer: {any}\n", .{input_buffer});
+
+    _ = hash_map.put(hash, key, value, ttl);
+
+    const result = call(hash_map, input_buffer, output_buffer);
+
+    std.debug.print("result: {any}\n", .{result});
+}

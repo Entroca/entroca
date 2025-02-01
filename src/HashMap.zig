@@ -1,6 +1,9 @@
 const std = @import("std");
 const Record = @import("Record.zig");
 const Utils = @import("Utils.zig");
+const Config = @import("Config.zig");
+const Result = @import("Error.zig").Result;
+const Error = @import("Error.zig");
 const Allocator = std.mem.Allocator;
 const random = std.crypto.random;
 const xxhash = std.hash.XxHash64.hash;
@@ -10,12 +13,12 @@ const Self = @This();
 
 allocator: Allocator,
 data: []Record,
-size: u32,
+config: Config,
 
-pub fn init(allocator: Allocator, size: u32) !Self {
-    const data = try allocator.alloc(Record, size);
+pub fn init(allocator: Allocator, config: Config) !Self {
+    const data = try allocator.alloc(Record, config.record_count);
 
-    for (0..size) |i| {
+    for (0..config.record_count) |i| {
         data[i] = Record{
             .data = null,
             .hash = null,
@@ -29,23 +32,31 @@ pub fn init(allocator: Allocator, size: u32) !Self {
     return Self{
         .allocator = allocator,
         .data = data,
-        .size = size,
+        .config = config,
     };
 }
 
-pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) !void {
-    const index = hash % self.size;
+pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) Error.Result(void) {
+    if (key.len > self.config.key_max_length) {
+        return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
+    }
+
+    if (value.len > self.config.value_max_length) {
+        return .{ .err = @intFromEnum(Error.Error.ValueTooLong) };
+    }
+
+    const index = hash % self.config.record_count;
     const record = self.data[index];
 
-    if (record.hash == null or (record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) or @as(u32, @intCast(std.time.timestamp())) > record.ttl or random.intRangeAtMost(u8, 0, std.math.maxInt(u8)) > record.temp) {
-        if (record.data) |data| {
-            self.allocator.free(data);
-        }
-
-        var data = try self.allocator.alloc(u8, key.len + value.len);
+    if (record.hash == null or (record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) or Utils.now() > record.ttl or random.intRangeAtMost(u8, 0, std.math.maxInt(u8)) > record.temp) {
+        var data = self.allocator.alloc(u8, key.len + value.len) catch return .{ .err = @intFromEnum(Error.Error.OutOfMemory) };
 
         @memcpy(data[0..key.len], key);
         @memcpy(data[key.len..], value);
+
+        if (record.data) |record_data| {
+            self.allocator.free(record_data);
+        }
 
         self.data[index] = Record{
             .data = data,
@@ -53,46 +64,58 @@ pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) !void {
             .temp = std.math.maxInt(u8) / 2,
             .key_length = @intCast(key.len),
             .value_length = @intCast(value.len),
-            .ttl = if (ttl) |t| t else std.math.maxInt(u32),
+            .ttl = if (ttl) |t| Utils.now() + t else std.math.maxInt(u32),
         };
     }
+
+    return .{ .ok = {} };
 }
 
-pub fn get(self: Self, hash: u64, key: []u8) ![]u8 {
-    const index = hash % self.size;
+pub fn get(self: Self, hash: u64, key: []u8) Error.Result([]u8) {
+    if (key.len > self.config.key_max_length) {
+        return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
+    }
+
+    const index = hash % self.config.record_count;
     var record = self.data[index];
 
     if (record.hash == null) {
-        return error.RecordEmpty;
+        return .{ .err = @intFromEnum(Error.Error.RecordEmpty) };
     }
 
-    if (@as(u32, @intCast(std.time.timestamp())) > record.ttl) {
+    if (Utils.now() > record.ttl) {
         self.delete_record(record, index);
-        return error.TtlExpired;
+        return .{ .err = @intFromEnum(Error.Error.TtlExpired) };
     }
 
     if (record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) {
         if (random.float(f64) < 0.05) {
             record.temp = Utils.saturating_add(u8, record.temp, 1);
 
-            var victim = self.data[random.intRangeAtMost(u32, 0, self.size)];
+            var victim = self.data[random.intRangeAtMost(u32, 0, self.config.record_count)];
 
             victim.temp = Utils.saturating_sub(u8, record.temp, 1);
         }
 
-        return record.data.?[record.key_length..];
+        return .{ .ok = record.data.?[record.key_length..] };
     }
 
-    return error.RecordNotFound;
+    return .{ .err = @intFromEnum(Error.Error.RecordNotFound) };
 }
 
-pub fn del(self: Self, hash: u64, key: []u8) void {
-    const index = hash % self.size;
+pub fn del(self: Self, hash: u64, key: []u8) Error.Result(void) {
+    if (key.len > self.config.key_max_length) {
+        return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
+    }
+
+    const index = hash % self.config.record_count;
     const record = self.data[index];
 
     if (record.hash != null and record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) {
         self.delete_record(record, index);
     }
+
+    return .{ .ok = {} };
 }
 
 inline fn delete_record(self: Self, record: Record, index: usize) void {
@@ -108,12 +131,8 @@ inline fn delete_record(self: Self, record: Record, index: usize) void {
     };
 }
 
-pub fn peek(self: Self, hash: u64) Record {
-    return self.data[hash % self.size];
-}
-
 pub fn free(self: Self) void {
-    for (0..self.size) |i| {
+    for (0..self.config.record_count) |i| {
         const record = self.data[i];
 
         if (record.data) |data| {
@@ -124,41 +143,57 @@ pub fn free(self: Self) void {
     self.allocator.free(self.data);
 }
 
-// test "HashMap" {
-//     const allocator = std.testing.allocator;
-//     const hash_map = try init(allocator, 1024);
-//     defer hash_map.free();
+test "HashMap" {
+    const config = Config{
+        .port = 3000,
+        .record_count = 65536,
+        .key_max_length = 1048576,
+        .value_max_length = 67108864,
+    };
 
-//     const key = @as([]u8, @constCast("Hello, world!"));
-//     const value = @as([]u8, @constCast("This is me, Mario!"));
-//     const hash = xxhash(0, key);
+    const allocator = std.testing.allocator;
+    const hash_map = try init(allocator, config);
+    defer hash_map.free();
 
-//     try hash_map.put(hash, key, value, null);
+    const key = @as([]u8, @constCast("Hello, world!"));
+    const value = @as([]u8, @constCast("This is me, Mario!"));
+    const hash = xxhash(0, key);
 
-//     const peek_record = hash_map.peek(hash);
+    const put_result = hash_map.put(hash, key, value, null);
 
-//     try expect(std.mem.eql(u8, peek_record.data.?[0..key.len], key));
-//     try expect(std.mem.eql(u8, peek_record.data.?[key.len..], value));
-//     try expect(peek_record.hash == hash);
-//     try expect(peek_record.temp == std.math.maxInt(u8) / 2);
+    try expect(Error.is_ok(put_result));
 
-//     const get_record = try hash_map.get(hash, key);
+    const put_record = hash_map.data[hash % config.record_count];
 
-//     try expect(std.mem.eql(u8, get_record.data.?[0..key.len], key));
-//     try expect(std.mem.eql(u8, get_record.data.?[key.len..], value));
-//     try expect(get_record.hash == hash);
-//     try expect(get_record.temp == std.math.maxInt(u8) / 2);
+    try expect(std.mem.eql(u8, put_record.data.?[0..key.len], key));
+    try expect(std.mem.eql(u8, put_record.data.?[key.len..], value));
+    try expect(put_record.hash == hash);
+    try expect(put_record.temp == std.math.maxInt(u8) / 2);
 
-//     hash_map.del(hash, key);
+    const get_result = hash_map.get(hash, key);
 
-//     const del_record = hash_map.peek(hash);
+    try expect(Error.is_ok(get_result));
 
-//     try expect(del_record.hash == null);
-//     try expect(del_record.data == null);
+    const get_value = get_result.ok;
 
-//     try hash_map.put(hash, key, value, @as(u32, @intCast(std.time.timestamp())) + 1);
+    try expect(std.mem.eql(u8, get_value, value));
 
-//     std.time.sleep(2000 * 1000000);
+    const del_result = hash_map.del(hash, key);
 
-//     try expect(hash_map.get(hash, key) == error.TtlExpired);
-// }
+    try expect(Error.is_ok(del_result));
+
+    const del_record = hash_map.data[hash % config.record_count];
+
+    try expect(del_record.hash == null);
+    try expect(del_record.data == null);
+
+    const put_result2 = hash_map.put(hash, key, value, 1);
+
+    try expect(Error.is_ok(put_result2));
+
+    std.time.sleep(2000 * 1000000);
+
+    const get_result2 = hash_map.get(hash, key);
+
+    try expect(Error.is_err(get_result2));
+}

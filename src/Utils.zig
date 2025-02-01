@@ -19,3 +19,7 @@ pub inline fn saturating_sub(comptime T: type, a: T, b: T) T {
 
     return result[0];
 }
+
+pub inline fn now() u32 {
+    return @as(u32, @intCast(std.time.timestamp()));
+}
