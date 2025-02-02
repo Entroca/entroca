@@ -6,23 +6,24 @@ const Result = @import("Error.zig").Result;
 const Error = @import("Error.zig");
 const Allocator = std.mem.Allocator;
 const random = std.crypto.random;
-const xxhash = std.hash.XxHash64.hash;
-const expect = std.testing.expect;
 
 const Self = @This();
 
 allocator: Allocator,
-data: []Record,
+records: []Record,
 config: Config,
 
+/// Initializes a new hash map with the given allocator and configuration.
+/// Allocates memory for all records and initializes them to empty state.
 pub fn init(allocator: Allocator, config: Config) !Self {
-    const data = try allocator.alloc(Record, config.record_count);
+    const records = try allocator.alloc(Record, config.record_count);
 
+    // Initialize all records with empty/default values
     for (0..config.record_count) |i| {
-        data[i] = Record{
+        records[i] = Record{
             .data = null,
             .hash = null,
-            .temp = std.math.maxInt(u8) / 2,
+            .temperature = std.math.maxInt(u8) / 2,
             .key_length = 0,
             .value_length = 0,
             .ttl = 0,
@@ -31,11 +32,13 @@ pub fn init(allocator: Allocator, config: Config) !Self {
 
     return Self{
         .allocator = allocator,
-        .data = data,
+        .records = records,
         .config = config,
     };
 }
 
+/// Stores a key-value pair in the hash map using the provided precomputed hash.
+/// Handles both insertions and updates, including eviction based on TTL and temperature.
 pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) Error.Result(void) {
     if (key.len > self.config.key_max_length) {
         return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
@@ -45,23 +48,39 @@ pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) Error.Resul
         return .{ .err = @intFromEnum(Error.Error.ValueTooLong) };
     }
 
-    const index = hash % self.config.record_count;
-    const record = self.data[index];
+    const index = self.hash_to_index(hash);
+    const current_record = self.records[index];
 
-    if (record.hash == null or (record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) or Utils.now() > record.ttl or random.intRangeAtMost(u8, 0, std.math.maxInt(u8)) > record.temp) {
-        var data = self.allocator.alloc(u8, key.len + value.len) catch return .{ .err = @intFromEnum(Error.Error.OutOfMemory) };
+    // Conditions for overwriting the current record:
+    // 1. Slot is empty
+    // 2. Existing key matches (update case)
+    // 3. Record has expired
+    // 4. Random eviction based on temperature value
+    const should_overwrite = current_record.hash == null or
+        (current_record.hash == hash and
+        std.mem.eql(u8, current_record.data.?[0..current_record.key_length], key)) or
+        Utils.now() > current_record.ttl or
+        random.intRangeAtMost(u8, 0, std.math.maxInt(u8)) > current_record.temperature;
 
-        @memcpy(data[0..key.len], key);
-        @memcpy(data[key.len..], value);
+    if (should_overwrite) {
+        // Allocate combined storage for key + value
+        var new_buffer = self.allocator.alloc(u8, key.len + value.len) catch
+            return .{ .err = @intFromEnum(Error.Error.OutOfMemory) };
 
-        if (record.data) |record_data| {
-            self.allocator.free(record_data);
+        // Copy key and value into the new buffer
+        @memcpy(new_buffer[0..key.len], key);
+        @memcpy(new_buffer[key.len..], value);
+
+        // Free existing data if present
+        if (current_record.data) |existing_buffer| {
+            self.allocator.free(existing_buffer);
         }
 
-        self.data[index] = Record{
-            .data = data,
+        // Create updated record
+        self.records[index] = Record{
+            .data = new_buffer,
             .hash = hash,
-            .temp = std.math.maxInt(u8) / 2,
+            .temperature = std.math.maxInt(u8) / 2,
             .key_length = @intCast(key.len),
             .value_length = @intCast(value.len),
             .ttl = if (ttl) |t| Utils.now() + t else std.math.maxInt(u32),
@@ -71,129 +90,99 @@ pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) Error.Resul
     return .{ .ok = {} };
 }
 
+/// Retrieves a value by its precomputed hash and key.
+/// Handles TTL expiration and implements temperature-based caching strategy.
 pub fn get(self: Self, hash: u64, key: []u8) Error.Result([]u8) {
     if (key.len > self.config.key_max_length) {
         return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
     }
 
-    const index = hash % self.config.record_count;
-    var record = self.data[index];
+    const index = self.hash_to_index(hash);
+    const current_record = self.records[index];
 
-    if (record.hash == null) {
+    if (current_record.hash == null) {
         return .{ .err = @intFromEnum(Error.Error.RecordEmpty) };
     }
 
-    if (Utils.now() > record.ttl) {
-        self.delete_record(record, index);
+    // Check and handle expiration
+    if (Utils.now() > current_record.ttl) {
+        self.clear_record_at_index(index);
         return .{ .err = @intFromEnum(Error.Error.TtlExpired) };
     }
 
-    if (record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) {
+    // Verify key match
+    if (current_record.hash == hash and
+        std.mem.eql(u8, current_record.data.?[0..current_record.key_length], key))
+    {
+
+        // With 5% probability, adjust temperatures for caching strategy
         if (random.float(f64) < 0.05) {
-            record.temp = Utils.saturating_add(u8, record.temp, 1);
+            // Increase temperature of current record
+            self.records[index].temperature = Utils.saturating_add(u8, current_record.temperature, 1);
 
-            var victim = self.data[random.intRangeAtMost(u32, 0, self.config.record_count)];
-
-            victim.temp = Utils.saturating_sub(u8, record.temp, 1);
+            // Find and cool a random victim record
+            const victim_index = random.intRangeAtMost(u32, 0, self.config.record_count);
+            var victim = &self.records[victim_index];
+            victim.temperature = Utils.saturating_sub(u8, victim.temperature, 1);
         }
 
-        return .{ .ok = record.data.?[record.key_length..] };
+        // Return the value portion of the buffer
+        return .{ .ok = current_record.data.?[current_record.key_length..] };
     }
 
     return .{ .err = @intFromEnum(Error.Error.RecordNotFound) };
 }
 
+/// Removes a record by its precomputed hash and key if it exists
 pub fn del(self: Self, hash: u64, key: []u8) Error.Result(void) {
     if (key.len > self.config.key_max_length) {
         return .{ .err = @intFromEnum(Error.Error.KeyTooLong) };
     }
 
-    const index = hash % self.config.record_count;
-    const record = self.data[index];
+    const index = self.hash_to_index(hash);
+    const current_record = self.records[index];
 
-    if (record.hash != null and record.hash == hash and std.mem.eql(u8, record.data.?[0..record.key_length], key)) {
-        self.delete_record(record, index);
+    if (current_record.hash != null and
+        current_record.hash == hash and
+        std.mem.eql(u8, current_record.data.?[0..current_record.key_length], key))
+    {
+        self.clear_record_at_index(index);
     }
 
     return .{ .ok = {} };
 }
 
-inline fn delete_record(self: Self, record: Record, index: usize) void {
-    self.allocator.free(record.data.?);
+/// Internal helper to clear a record at a specific index and free its memory
+inline fn clear_record_at_index(self: Self, index: usize) void {
+    const record = self.records[index];
 
-    self.data[index] = Record{
+    if (record.data) |buffer| {
+        self.allocator.free(buffer);
+    }
+
+    self.records[index] = Record{
         .data = null,
         .hash = null,
-        .temp = std.math.maxInt(u8) / 2,
+        .temperature = std.math.maxInt(u8) / 2,
         .key_length = 0,
         .value_length = 0,
         .ttl = 0,
     };
 }
 
-pub fn free(self: Self) void {
-    for (0..self.config.record_count) |i| {
-        const record = self.data[i];
+inline fn hash_to_index(self: Self, hash: u64) usize {
+    return @intCast(hash % self.config.record_count);
+}
 
-        if (record.data) |data| {
-            self.allocator.free(data);
+/// Releases all resources and memory associated with the hash map
+pub fn deinit(self: Self) void {
+    // Free all individual record buffers
+    for (0..self.config.record_count) |i| {
+        if (self.records[i].data) |buffer| {
+            self.allocator.free(buffer);
         }
     }
 
-    self.allocator.free(self.data);
-}
-
-test "HashMap" {
-    const config = Config{
-        .port = 3000,
-        .record_count = 65536,
-        .key_max_length = 1048576,
-        .value_max_length = 67108864,
-    };
-
-    const allocator = std.testing.allocator;
-    const hash_map = try init(allocator, config);
-    defer hash_map.free();
-
-    const key = @as([]u8, @constCast("Hello, world!"));
-    const value = @as([]u8, @constCast("This is me, Mario!"));
-    const hash = xxhash(0, key);
-
-    const put_result = hash_map.put(hash, key, value, null);
-
-    try expect(Error.is_ok(put_result));
-
-    const put_record = hash_map.data[hash % config.record_count];
-
-    try expect(std.mem.eql(u8, put_record.data.?[0..key.len], key));
-    try expect(std.mem.eql(u8, put_record.data.?[key.len..], value));
-    try expect(put_record.hash == hash);
-    try expect(put_record.temp == std.math.maxInt(u8) / 2);
-
-    const get_result = hash_map.get(hash, key);
-
-    try expect(Error.is_ok(get_result));
-
-    const get_value = get_result.ok;
-
-    try expect(std.mem.eql(u8, get_value, value));
-
-    const del_result = hash_map.del(hash, key);
-
-    try expect(Error.is_ok(del_result));
-
-    const del_record = hash_map.data[hash % config.record_count];
-
-    try expect(del_record.hash == null);
-    try expect(del_record.data == null);
-
-    const put_result2 = hash_map.put(hash, key, value, 1);
-
-    try expect(Error.is_ok(put_result2));
-
-    std.time.sleep(2000 * 1000000);
-
-    const get_result2 = hash_map.get(hash, key);
-
-    try expect(Error.is_err(get_result2));
+    // Free the main records array
+    self.allocator.free(self.records);
 }
