@@ -33,6 +33,10 @@ pub fn cmp_hash(self: Self, hash: ?u64) bool {
     return self.hash == hash;
 }
 
+pub fn cmp_hash_key(self: Self, hash: ?u64, key: []u8) bool {
+    return self.cmp_hash(hash) and self.cmp_key(key);
+}
+
 pub fn exp_ttl(self: Self) bool {
     return Utils.now() > self.ttl;
 }

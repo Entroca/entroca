@@ -17,6 +17,9 @@ config: Config,
 random_probability: RandomProbability,
 random_temperature: RandomTemperature,
 
+pub const PutError = ErrorAssertKeyValueLength || AllocatorError;
+pub const GetError = error{ RecordEmpty, TtlExpired, RecordNotFound } || ErrorAssertKeyLength;
+pub const DelError = ErrorAssertKeyLength;
 pub const Error = PutError || GetError || DelError;
 
 pub fn init(allocator: Allocator, config: Config) AllocatorError!Self {
@@ -45,28 +48,20 @@ pub fn init(allocator: Allocator, config: Config) AllocatorError!Self {
     };
 }
 
-pub const PutError = ErrorAssertKeyValueLength || AllocatorError;
-
-pub fn put(
-    self: *Self,
-    hash: u64,
-    key: []u8,
-    value: []u8,
-    ttl: ?u32,
-) PutError!void {
+pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) PutError!void {
     try Record.assert_key_length(key, self.config);
     try Record.assert_value_length(value, self.config);
 
     const index = Record.hash_to_index(self.config, hash);
-    const current_record = self.records[index];
+    const current_record = &self.records[index];
 
     if (current_record.cmp_hash(null) or
-        (current_record.cmp_hash(hash) and
-        current_record.cmp_key(key)) or
+        current_record.cmp_hash_key(hash, key) or
         current_record.exp_ttl() or
-        current_record.is_unlucky(
-        self.random_temperature.next(),
-    )) {
+        current_record.is_unlucky(block: {
+        var random_temperature = self.random_temperature;
+        break :block random_temperature.next();
+    })) {
         current_record.deinit(self.allocator);
 
         self.records[index] = try Record.create(
@@ -79,17 +74,11 @@ pub fn put(
     }
 }
 
-pub const GetError = error{
-    RecordEmpty,
-    TtlExpired,
-    RecordNotFound,
-} || ErrorAssertKeyLength;
-
-pub fn get(self: *Self, hash: u64, key: []u8) GetError![]u8 {
+pub fn get(self: Self, hash: u64, key: []u8) GetError![]u8 {
     try Record.assert_key_length(key, self.config);
 
     const index = Record.hash_to_index(self.config, hash);
-    const current_record = self.records[index];
+    const current_record = &self.records[index];
 
     if (current_record.cmp_hash(null)) {
         return error.RecordEmpty;
@@ -102,19 +91,23 @@ pub fn get(self: *Self, hash: u64, key: []u8) GetError![]u8 {
         return error.TtlExpired;
     }
 
-    if (current_record.cmp_hash(hash) and current_record.cmp_key(key)) {
+    if (current_record.cmp_hash_key(hash, key)) {
+        var random_probability = self.random_probability;
+
         if (Record.should_inc_temp(
             self.config,
-            self.random_probability.next(),
+            random_probability.next(),
         )) {
-            self.records[index].temp_inc();
+            current_record.temp_inc();
 
             const victim_index = Record.get_victim_index(
                 self.config,
                 index,
             );
 
-            self.records[victim_index].temp_dec();
+            const victim_record = &self.records[victim_index];
+
+            victim_record.temp_dec();
         }
 
         return current_record.get_value();
@@ -123,17 +116,13 @@ pub fn get(self: *Self, hash: u64, key: []u8) GetError![]u8 {
     return error.RecordNotFound;
 }
 
-pub const DelError = ErrorAssertKeyLength;
-
 pub fn del(self: Self, hash: u64, key: []u8) DelError!void {
     try Record.assert_key_length(key, self.config);
 
     const index = Record.hash_to_index(self.config, hash);
-    const current_record = self.records[index];
+    const current_record = &self.records[index];
 
-    if (current_record.cmp_hash(null) == false and
-        current_record.cmp_hash(hash) and current_record.cmp_key(key))
-    {
+    if (current_record.cmp_hash(null) == false and current_record.cmp_hash_key(hash, key)) {
         current_record.deinit(self.allocator);
         self.records[index] = Record.default();
     }
