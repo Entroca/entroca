@@ -1,53 +1,94 @@
 const std = @import("std");
 const Record = @import("Record.zig");
-const Utils = @import("Utils.zig");
 const Config = @import("Config.zig");
-const Result = @import("Result.zig").Result;
-const RandomIndex = @import("Random/Index.zig");
+const RandomProbability = @import("Random/Probability.zig");
+const RandomTemperature = @import("Random/Temperature.zig");
+
 const Allocator = std.mem.Allocator;
+const AllocatorError = Allocator.Error;
+const ErrorAssertKeyValueLength = Record.ErrorAssertKeyValueLength;
+const ErrorAssertKeyLength = Record.ErrorAssertKeyLength;
 
 const Self = @This();
 
 allocator: Allocator,
 records: []Record,
 config: Config,
-random_index: RandomIndex,
+random_probability: RandomProbability,
+random_temperature: RandomTemperature,
 
-pub fn init(allocator: Allocator, config: Config) !Self {
+pub const Error = PutError || GetError || DelError;
+
+pub fn init(allocator: Allocator, config: Config) AllocatorError!Self {
+    const random_probability = try RandomProbability.init(
+        allocator,
+        config.record_count,
+    );
+
+    const random_temperature = try RandomTemperature.init(
+        allocator,
+        config.record_count,
+    );
+
     const records = try allocator.alloc(Record, config.record_count);
-    const random_index = try RandomIndex.init(allocator, config.record_count);
 
     for (0..config.record_count) |i| {
         records[i] = Record.default();
     }
 
-    return Self{ .allocator = allocator, .records = records, .config = config, .random_index = random_index };
+    return Self{
+        .allocator = allocator,
+        .records = records,
+        .config = config,
+        .random_probability = random_probability,
+        .random_temperature = random_temperature,
+    };
 }
 
-pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) !void {
-    try Utils.assert_key_length(key, self.config);
-    try Utils.assert_value_length(value, self.config);
+pub const PutError = ErrorAssertKeyValueLength || AllocatorError;
 
-    const index = Utils.hash_to_index(self.config, hash);
+pub fn put(
+    self: *Self,
+    hash: u64,
+    key: []u8,
+    value: []u8,
+    ttl: ?u32,
+) PutError!void {
+    try Record.assert_key_length(key, self.config);
+    try Record.assert_value_length(value, self.config);
+
+    const index = Record.hash_to_index(self.config, hash);
     const current_record = self.records[index];
 
-    const should_overwrite = current_record.cmp_hash(null) or
+    if (current_record.cmp_hash(null) or
         (current_record.cmp_hash(hash) and
         current_record.cmp_key(key)) or
         current_record.exp_ttl() or
-        current_record.is_unlucky();
-
-    if (should_overwrite) {
+        current_record.is_unlucky(
+        self.random_temperature.next(),
+    )) {
         current_record.deinit(self.allocator);
 
-        self.records[index] = try Record.create(self.allocator, hash, key, value, ttl);
+        self.records[index] = try Record.create(
+            self.allocator,
+            hash,
+            key,
+            value,
+            ttl,
+        );
     }
 }
 
-pub fn get(self: *Self, hash: u64, key: []u8) ![]u8 {
-    try Utils.assert_key_length(key, self.config);
+pub const GetError = error{
+    RecordEmpty,
+    TtlExpired,
+    RecordNotFound,
+} || ErrorAssertKeyLength;
 
-    const index = Utils.hash_to_index(self.config, hash);
+pub fn get(self: *Self, hash: u64, key: []u8) GetError![]u8 {
+    try Record.assert_key_length(key, self.config);
+
+    const index = Record.hash_to_index(self.config, hash);
     const current_record = self.records[index];
 
     if (current_record.cmp_hash(null)) {
@@ -62,10 +103,16 @@ pub fn get(self: *Self, hash: u64, key: []u8) ![]u8 {
     }
 
     if (current_record.cmp_hash(hash) and current_record.cmp_key(key)) {
-        if (Utils.should_inc_temp(self.config)) {
+        if (Record.should_inc_temp(
+            self.config,
+            self.random_probability.next(),
+        )) {
             self.records[index].temp_inc();
 
-            const victim_index = self.random_index.next();
+            const victim_index = Record.get_victim_index(
+                self.config,
+                index,
+            );
 
             self.records[victim_index].temp_dec();
         }
@@ -76,10 +123,12 @@ pub fn get(self: *Self, hash: u64, key: []u8) ![]u8 {
     return error.RecordNotFound;
 }
 
-pub fn del(self: Self, hash: u64, key: []u8) !void {
-    try Utils.assert_key_length(key, self.config);
+pub const DelError = ErrorAssertKeyLength;
 
-    const index = Utils.hash_to_index(self.config, hash);
+pub fn del(self: Self, hash: u64, key: []u8) DelError!void {
+    try Record.assert_key_length(key, self.config);
+
+    const index = Record.hash_to_index(self.config, hash);
     const current_record = self.records[index];
 
     if (current_record.cmp_hash(null) == false and
@@ -96,5 +145,6 @@ pub fn deinit(self: Self) void {
     }
 
     self.allocator.free(self.records);
-    self.random_index.deinit();
+    self.random_probability.deinit();
+    self.random_temperature.deinit();
 }

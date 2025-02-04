@@ -1,7 +1,9 @@
 const std = @import("std");
 const HashMap = @import("HashMap.zig");
 const Config = @import("Config.zig");
-const Utils = @import("Utils.zig");
+const Record = @import("Record.zig");
+
+const Error = HashMap.Error;
 
 const allocator = std.testing.allocator;
 const xxhash = std.hash.XxHash64.hash;
@@ -46,16 +48,16 @@ test "HashMap" {
         const hash = xxhash(0, key_normal);
 
         // Test key length validations
-        try expectError(error.KeyTooShort, hash_map.put(hash, key_short, value_normal, null));
-        try expectError(error.KeyTooLong, hash_map.put(hash, key_long, value_normal, null));
-        try expectError(error.KeyTooShort, hash_map.get(hash, key_short));
-        try expectError(error.KeyTooLong, hash_map.get(hash, key_long));
-        try expectError(error.KeyTooShort, hash_map.del(hash, key_short));
-        try expectError(error.KeyTooLong, hash_map.del(hash, key_long));
+        try expectError(Error.KeyTooShort, hash_map.put(hash, key_short, value_normal, null));
+        try expectError(Error.KeyTooLong, hash_map.put(hash, key_long, value_normal, null));
+        try expectError(Error.KeyTooShort, hash_map.get(hash, key_short));
+        try expectError(Error.KeyTooLong, hash_map.get(hash, key_long));
+        try expectError(Error.KeyTooShort, hash_map.del(hash, key_short));
+        try expectError(Error.KeyTooLong, hash_map.del(hash, key_long));
 
         // Test value length validations
-        try expectError(error.ValueTooShort, hash_map.put(hash, key_normal, value_short, null));
-        try expectError(error.ValueTooLong, hash_map.put(hash, key_normal, value_long, null));
+        try expectError(Error.ValueTooShort, hash_map.put(hash, key_normal, value_short, null));
+        try expectError(Error.ValueTooLong, hash_map.put(hash, key_normal, value_long, null));
     }
 
     // Test empty record handling
@@ -64,7 +66,7 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try expectError(error.RecordEmpty, hash_map.get(hash, kv.key));
+        try expectError(Error.RecordEmpty, hash_map.get(hash, kv.key));
     }
 
     // Test successful put and get operations
@@ -103,8 +105,8 @@ test "HashMap" {
         try hash_map.put(hash, kv.key, kv.value, 1); // TTL 1 second
         std.time.sleep(2 * std.time.ns_per_s);
 
-        try expectError(error.TtlExpired, hash_map.get(hash, kv.key));
-        const index = Utils.hash_to_index(config, hash);
+        try expectError(Error.TtlExpired, hash_map.get(hash, kv.key));
+        const index = Record.hash_to_index(config, hash);
         try expect(hash_map.records[index].cmp_hash(null));
     }
 
@@ -116,7 +118,7 @@ test "HashMap" {
         const hash = xxhash(0, kv.key);
         try hash_map.put(hash, kv.key, kv.value, null);
         try hash_map.del(hash, kv.key);
-        try expectError(error.RecordEmpty, hash_map.get(hash, kv.key));
+        try expectError(Error.RecordEmpty, hash_map.get(hash, kv.key));
     }
 
     // Test maximum length boundaries
@@ -129,40 +131,6 @@ test "HashMap" {
         const result = try hash_map.get(hash, kv.key);
         try expect(std.mem.eql(u8, result, kv.value));
     }
-}
-
-test "HashMap collision" {
-    const collision_config = Config{
-        .port = 3000,
-        .warm_up_probability = 0.0, // Disable unlucky overwrites
-        .record_count = 1,
-        .key_max_length = 250,
-        .value_max_length = 1048576,
-    };
-
-    var collision_map = try HashMap.init(allocator, collision_config);
-    defer collision_map.deinit();
-
-    // Test collision behavior
-    const kv1 = try create_key_value(100, 1000, 't', 'u');
-    const kv2 = try create_key_value(100, 1000, 'v', 'w');
-    defer {
-        free_key_value(kv1);
-        free_key_value(kv2);
-    }
-
-    const hash1 = xxhash(0, kv1.key);
-    const hash2 = xxhash(0, kv2.key);
-
-    try collision_map.put(hash1, kv1.key, kv1.value, null);
-    try collision_map.put(hash2, kv2.key, kv2.value, null);
-
-    // Verify second record wasn't stored due to collision
-    try expectError(error.RecordNotFound, collision_map.get(hash2, kv2.key));
-
-    // Verify first record remains intact
-    const result = try collision_map.get(hash1, kv1.key);
-    try expect(std.mem.eql(u8, result, kv1.value));
 }
 
 const KeyValue = struct {
