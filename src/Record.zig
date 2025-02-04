@@ -41,8 +41,10 @@ pub fn exp_ttl(self: Self) bool {
     return Utils.now() > self.ttl;
 }
 
+const UNLUCKY_CURVE = Utils.create_boltzmann_curve(u8, 32.0);
+
 pub fn is_unlucky(self: Self, random_temperature: u8) bool {
-    return random_temperature > self.temperature;
+    return random_temperature < UNLUCKY_CURVE[self.temperature];
 }
 
 pub fn ttl_value(ttl: ?u32) u32 {

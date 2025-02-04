@@ -58,10 +58,12 @@ pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) PutError!vo
     if (current_record.cmp_hash(null) or
         current_record.cmp_hash_key(hash, key) or
         current_record.exp_ttl() or
-        current_record.is_unlucky(block: {
-        var random_temperature = self.random_temperature;
-        break :block random_temperature.next();
-    })) {
+        current_record.is_unlucky(
+        block: {
+            var random_temperature = self.random_temperature;
+            break :block random_temperature.next();
+        },
+    )) {
         current_record.deinit(self.allocator);
 
         self.records[index] = try Record.create(
@@ -92,11 +94,12 @@ pub fn get(self: Self, hash: u64, key: []u8) GetError![]u8 {
     }
 
     if (current_record.cmp_hash_key(hash, key)) {
-        var random_probability = self.random_probability;
-
         if (Record.should_inc_temp(
             self.config,
-            random_probability.next(),
+            block: {
+                var random_probability = self.random_probability;
+                break :block random_probability.next();
+            },
         )) {
             current_record.temp_inc();
 

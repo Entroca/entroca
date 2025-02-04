@@ -28,3 +28,17 @@ pub inline fn now() u32 {
 pub inline fn memcmp(a: []u8, b: []u8) bool {
     return std.mem.eql(u8, a, b);
 }
+
+pub fn create_boltzmann_curve(comptime T: type, kT: f64) [std.math.maxInt(T) + 1]T {
+    const size = std.math.maxInt(T) + 1;
+    var table: [size]T = undefined;
+
+    for (0..size) |index| {
+        const temp: f64 = @floatFromInt(index);
+        const prob = @exp(-temp / kT);
+
+        table[index] = @intFromFloat(prob * @as(f64, @floatFromInt(std.math.maxInt(T))));
+    }
+
+    return table;
+}
