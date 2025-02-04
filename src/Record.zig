@@ -1,6 +1,7 @@
 const std = @import("std");
 const Utils = @import("Utils.zig");
 const Config = @import("Config.zig");
+const Constants = @import("Constants.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -12,8 +13,6 @@ key_length: u32,
 value_length: u32,
 ttl: u32,
 temperature: u8,
-
-pub const TEMP_DEFAULT = std.math.maxInt(u8) / 2;
 
 pub const ErrorAssertKeyValueLength = ErrorAssertKeyLength || ErrorAssertValueLength;
 
@@ -41,10 +40,8 @@ pub fn exp_ttl(self: Self) bool {
     return Utils.now() > self.ttl;
 }
 
-const UNLUCKY_CURVE = Utils.create_boltzmann_curve(u8, 32.0);
-
 pub fn is_unlucky(self: Self, random_temperature: u8) bool {
-    return random_temperature < UNLUCKY_CURVE[self.temperature];
+    return random_temperature < Constants.UNLUCKY_CURVE[self.temperature];
 }
 
 pub fn ttl_value(ttl: ?u32) u32 {
@@ -107,7 +104,7 @@ pub fn default() Self {
     return Self{
         .data = null,
         .hash = null,
-        .temperature = TEMP_DEFAULT,
+        .temperature = Constants.TEMP_DEFAULT,
         .key_length = 0,
         .value_length = 0,
         .ttl = 0,
@@ -123,7 +120,7 @@ pub fn create(allocator: Allocator, hash: u64, key: []u8, value: []u8, ttl: ?u32
     return Self{
         .data = new_buffer,
         .hash = hash,
-        .temperature = TEMP_DEFAULT,
+        .temperature = Constants.TEMP_DEFAULT,
         .key_length = @intCast(key.len),
         .value_length = @intCast(value.len),
         .ttl = ttl_value(ttl),
