@@ -2,6 +2,7 @@ const std = @import("std");
 const HashMap = @import("HashMap.zig");
 const Config = @import("Config.zig");
 const Record = @import("Record.zig");
+const Protocol = @import("Protocol.zig");
 
 const Error = HashMap.Error;
 
@@ -48,16 +49,48 @@ test "HashMap" {
         const hash = xxhash(0, key_normal);
 
         // Test key length validations
-        try expectError(Error.KeyTooShort, hash_map.put(hash, key_short, value_normal, null));
-        try expectError(Error.KeyTooLong, hash_map.put(hash, key_long, value_normal, null));
-        try expectError(Error.KeyTooShort, hash_map.get(hash, key_short));
-        try expectError(Error.KeyTooLong, hash_map.get(hash, key_long));
-        try expectError(Error.KeyTooShort, hash_map.del(hash, key_short));
-        try expectError(Error.KeyTooLong, hash_map.del(hash, key_long));
+        try expectError(Error.KeyTooShort, hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = key_short,
+            .value = value_normal,
+            .ttl = null,
+        }));
+        try expectError(Error.KeyTooLong, hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = key_long,
+            .value = value_normal,
+            .ttl = null,
+        }));
+        try expectError(Error.KeyTooShort, hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = key_short,
+        }));
+        try expectError(Error.KeyTooLong, hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = key_long,
+        }));
+        try expectError(Error.KeyTooShort, hash_map.del(Protocol.Get{
+            .hash = hash,
+            .key = key_short,
+        }));
+        try expectError(Error.KeyTooLong, hash_map.del(Protocol.Get{
+            .hash = hash,
+            .key = key_long,
+        }));
 
         // Test value length validations
-        try expectError(Error.ValueTooShort, hash_map.put(hash, key_normal, value_short, null));
-        try expectError(Error.ValueTooLong, hash_map.put(hash, key_normal, value_long, null));
+        try expectError(Error.ValueTooShort, hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = key_normal,
+            .value = value_short,
+            .ttl = null,
+        }));
+        try expectError(Error.ValueTooLong, hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = key_normal,
+            .value = value_long,
+            .ttl = null,
+        }));
     }
 
     // Test empty record handling
@@ -66,7 +99,10 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try expectError(Error.RecordEmpty, hash_map.get(hash, kv.key));
+        try expectError(Error.RecordEmpty, hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        }));
     }
 
     // Test successful put and get operations
@@ -75,8 +111,16 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try hash_map.put(hash, kv.key, kv.value, null);
-        const result = try hash_map.get(hash, kv.key);
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = kv.value,
+            .ttl = null,
+        });
+        const result = try hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        });
         try expect(std.mem.eql(u8, result, kv.value));
     }
 
@@ -90,9 +134,22 @@ test "HashMap" {
         }
 
         const hash = xxhash(0, kv.key);
-        try hash_map.put(hash, kv.key, kv.value, null);
-        try hash_map.put(hash, kv.key, new_value, null);
-        const result = try hash_map.get(hash, kv.key);
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = kv.value,
+            .ttl = null,
+        });
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = new_value,
+            .ttl = null,
+        });
+        const result = try hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        });
         try expect(std.mem.eql(u8, result, new_value));
     }
 
@@ -102,10 +159,18 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try hash_map.put(hash, kv.key, kv.value, 1); // TTL 1 second
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = kv.value,
+            .ttl = 1,
+        });
         std.time.sleep(2 * std.time.ns_per_s);
 
-        try expectError(Error.TtlExpired, hash_map.get(hash, kv.key));
+        try expectError(Error.TtlExpired, hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        }));
         const index = Record.hash_to_index(config, hash);
         try expect(hash_map.records[index].cmp_hash(null));
     }
@@ -116,9 +181,20 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try hash_map.put(hash, kv.key, kv.value, null);
-        try hash_map.del(hash, kv.key);
-        try expectError(Error.RecordEmpty, hash_map.get(hash, kv.key));
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = kv.value,
+            .ttl = null,
+        });
+        try hash_map.del(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        });
+        try expectError(Error.RecordEmpty, hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        }));
     }
 
     // Test maximum length boundaries
@@ -127,8 +203,16 @@ test "HashMap" {
         defer free_key_value(kv);
 
         const hash = xxhash(0, kv.key);
-        try hash_map.put(hash, kv.key, kv.value, null);
-        const result = try hash_map.get(hash, kv.key);
+        try hash_map.put(Protocol.Put{
+            .hash = hash,
+            .key = kv.key,
+            .value = kv.value,
+            .ttl = null,
+        });
+        const result = try hash_map.get(Protocol.Get{
+            .hash = hash,
+            .key = kv.key,
+        });
         try expect(std.mem.eql(u8, result, kv.value));
     }
 }
@@ -140,9 +224,7 @@ const KeyValue = struct {
 
 pub fn create_filled_slice(length: usize, fill_char: u8) ![]u8 {
     const slice = try allocator.alloc(u8, length);
-
     @memset(slice, fill_char);
-
     return slice;
 }
 

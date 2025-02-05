@@ -42,3 +42,11 @@ pub fn create_boltzmann_curve(comptime T: type, kT: f64) [std.math.maxInt(T) + 1
 
     return table;
 }
+
+pub const ReadError = error{NotEnoughBytes};
+
+pub fn assert_bytes(index: usize, buffer: []u8, size: usize) ReadError!void {
+    if (buffer.len - index < size) {
+        return error.NotEnoughBytes;
+    }
+}

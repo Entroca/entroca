@@ -1,8 +1,8 @@
 const std = @import("std");
 const Record = @import("Record.zig");
 const Config = @import("Config.zig");
-const RandomProbability = @import("Random/Probability.zig");
-const RandomTemperature = @import("Random/Temperature.zig");
+const Random = @import("Random.zig");
+const Protocol = @import("Protocol.zig");
 
 const Allocator = std.mem.Allocator;
 const AllocatorError = Allocator.Error;
@@ -14,8 +14,8 @@ const Self = @This();
 allocator: Allocator,
 records: []Record,
 config: Config,
-random_probability: RandomProbability,
-random_temperature: RandomTemperature,
+random_probability: Random.Probability,
+random_temperature: Random.Temperature,
 
 pub const PutError = ErrorAssertKeyValueLength || AllocatorError;
 pub const GetError = error{ RecordEmpty, TtlExpired, RecordNotFound } || ErrorAssertKeyLength;
@@ -23,12 +23,12 @@ pub const DelError = ErrorAssertKeyLength;
 pub const Error = PutError || GetError || DelError;
 
 pub fn init(allocator: Allocator, config: Config) AllocatorError!Self {
-    const random_probability = try RandomProbability.init(
+    const random_probability = try Random.Probability.init(
         allocator,
         config.record_count,
     );
 
-    const random_temperature = try RandomTemperature.init(
+    const random_temperature = try Random.Temperature.init(
         allocator,
         config.record_count,
     );
@@ -48,15 +48,15 @@ pub fn init(allocator: Allocator, config: Config) AllocatorError!Self {
     };
 }
 
-pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) PutError!void {
-    try Record.assert_key_length(key, self.config);
-    try Record.assert_value_length(value, self.config);
+pub fn put(self: Self, data: Protocol.Put) PutError!void {
+    try Record.assert_key_length(data.key, self.config);
+    try Record.assert_value_length(data.value, self.config);
 
-    const index = Record.hash_to_index(self.config, hash);
+    const index = Record.hash_to_index(self.config, data.hash);
     const current_record = &self.records[index];
 
     if (current_record.cmp_hash(null) or
-        current_record.cmp_hash_key(hash, key) or
+        current_record.cmp_hash_key(data.hash, data.key) or
         current_record.exp_ttl() or
         current_record.is_unlucky(
         block: {
@@ -68,18 +68,15 @@ pub fn put(self: Self, hash: u64, key: []u8, value: []u8, ttl: ?u32) PutError!vo
 
         self.records[index] = try Record.create(
             self.allocator,
-            hash,
-            key,
-            value,
-            ttl,
+            data,
         );
     }
 }
 
-pub fn get(self: Self, hash: u64, key: []u8) GetError![]u8 {
-    try Record.assert_key_length(key, self.config);
+pub fn get(self: Self, data: Protocol.Get) GetError![]u8 {
+    try Record.assert_key_length(data.key, self.config);
 
-    const index = Record.hash_to_index(self.config, hash);
+    const index = Record.hash_to_index(self.config, data.hash);
     const current_record = &self.records[index];
 
     if (current_record.cmp_hash(null)) {
@@ -93,7 +90,7 @@ pub fn get(self: Self, hash: u64, key: []u8) GetError![]u8 {
         return error.TtlExpired;
     }
 
-    if (current_record.cmp_hash_key(hash, key)) {
+    if (current_record.cmp_hash_key(data.hash, data.key)) {
         if (Record.should_inc_temp(
             self.config,
             block: {
@@ -119,13 +116,15 @@ pub fn get(self: Self, hash: u64, key: []u8) GetError![]u8 {
     return error.RecordNotFound;
 }
 
-pub fn del(self: Self, hash: u64, key: []u8) DelError!void {
-    try Record.assert_key_length(key, self.config);
+pub fn del(self: Self, data: Protocol.Get) DelError!void {
+    try Record.assert_key_length(data.key, self.config);
 
-    const index = Record.hash_to_index(self.config, hash);
+    const index = Record.hash_to_index(self.config, data.hash);
     const current_record = &self.records[index];
+    const hash_not_null = current_record.cmp_hash(null) == false;
+    const hash_key_equals = current_record.cmp_hash_key(data.hash, data.key);
 
-    if (current_record.cmp_hash(null) == false and current_record.cmp_hash_key(hash, key)) {
+    if (hash_not_null and hash_key_equals) {
         current_record.deinit(self.allocator);
         self.records[index] = Record.default();
     }
