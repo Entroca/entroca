@@ -2,7 +2,6 @@ const std = @import("std");
 const Utils = @import("Utils.zig");
 const Config = @import("Config.zig");
 const Constants = @import("Constants.zig");
-const Protocol = @import("Protocol.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -112,18 +111,18 @@ pub fn default() Self {
     };
 }
 
-pub fn create(allocator: Allocator, data: Protocol.Put) !Self {
-    var new_buffer = try allocator.alloc(u8, data.key.len + data.value.len);
+pub fn create(allocator: Allocator, hash: u64, key: []u8, value: []u8, ttl: ?u32) !Self {
+    var new_buffer = try allocator.alloc(u8, key.len + value.len);
 
-    @memcpy(new_buffer[0..data.key.len], data.key);
-    @memcpy(new_buffer[data.key.len..], data.value);
+    @memcpy(new_buffer[0..key.len], key);
+    @memcpy(new_buffer[key.len..], value);
 
     return Self{
         .data = new_buffer,
-        .hash = data.hash,
+        .hash = hash,
         .temperature = Constants.TEMP_DEFAULT,
-        .key_length = @intCast(data.key.len),
-        .value_length = @intCast(data.value.len),
-        .ttl = ttl_value(data.ttl),
+        .key_length = @intCast(key.len),
+        .value_length = @intCast(value.len),
+        .ttl = ttl_value(ttl),
     };
 }
