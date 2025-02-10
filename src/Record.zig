@@ -1,128 +1,201 @@
 const std = @import("std");
-const Utils = @import("Utils.zig");
 const Config = @import("Config.zig");
-const Constants = @import("Constants.zig");
+const Utils = @import("Utils.zig");
 
 const Allocator = std.mem.Allocator;
 
-const Self = @This();
+pub fn create(config: Config) type {
+    // TODO: make sure all fields are padded
+    // and that the whole struct is padded
+    return packed struct {
+        const Self = @This();
 
-data: ?[]u8,
-hash: ?u64,
-key_length: u32,
-value_length: u32,
-ttl: u32,
-temperature: u8,
+        empty: bool,
+        hash: config.HashType(),
+        key: config.KeyType(),
+        key_length: config.KeyLengthType(),
+        value: config.ValueType(),
+        value_length: config.ValueLengthType(),
+        total_length: config.TotalLengthType(),
+        data: config.DataType(),
+        temperature: config.TemperatureType(),
 
-pub const ErrorAssertKeyValueLength = ErrorAssertKeyLength || ErrorAssertValueLength;
+        const CURVE = Utils.createBoltzmannCurve(config.TemperatureType(), config.boltzmann);
 
-pub fn get_key(self: Self) []u8 {
-    return self.data.?[0..self.key_length];
-}
+        pub inline fn compareHash(self: Self, hash: config.HashType()) bool {
+            return self.hash == hash;
+        }
 
-pub fn get_value(self: Self) []u8 {
-    return self.data.?[self.key_length..];
-}
+        pub inline fn isEmpty(self: Self) bool {
+            return self.empty == true;
+        }
 
-pub fn cmp_key(self: Self, key: []u8) bool {
-    return Utils.memcmp(self.get_key(), key);
-}
+        pub inline fn getKeyLength(self: Self) usize {
+            return switch (comptime config.key.diff_size()) {
+                0 => comptime config.key.max_size(),
+                else => self.key_length,
+            };
+        }
 
-pub fn cmp_hash(self: Self, hash: ?u64) bool {
-    return self.hash == hash;
-}
+        pub inline fn getKey(self: Self) []u8 {
+            return switch (comptime config.key) {
+                .static => std.mem.asBytes(@constCast(&self.key))[0..self.getKeyLength()],
+                .dynamic => self.data[0..self.getKeyLength()],
+            };
+        }
 
-pub fn cmp_hash_key(self: Self, hash: ?u64, key: []u8) bool {
-    return self.cmp_hash(hash) and self.cmp_key(key);
-}
+        pub fn compareKey(self: Self, key: []u8) bool {
+            const self_key = self.getKey();
 
-pub fn exp_ttl(self: Self) bool {
-    return Utils.now() > self.ttl;
-}
+            if (self_key.len != key.len) {
+                return false;
+            }
 
-pub fn is_unlucky(self: Self, random_temperature: u8) bool {
-    return random_temperature < Constants.UNLUCKY_CURVE[self.temperature];
-}
+            return std.mem.eql(u8, self_key, key);
+        }
 
-pub fn ttl_value(ttl: ?u32) u32 {
-    return if (ttl) |t| Utils.now() + t else std.math.maxInt(u32);
-}
+        pub inline fn compareHashAndKey(self: Self, hash: config.HashType(), key: []u8) bool {
+            return self.compareHash(hash) and self.compareKey(key);
+        }
 
-pub fn hash_to_index(config: Config, hash: u64) u32 {
-    return @intCast(hash % config.record_count);
-}
+        pub inline fn getValueLength(self: Self) usize {
+            return switch (comptime config.value.diff_size()) {
+                0 => comptime config.value.max_size(),
+                else => self.value_length,
+            };
+        }
 
-pub fn get_victim_index(config: Config, current_index: u32) u32 {
-    return @min(current_index + 1, config.record_count - 1);
-}
+        pub inline fn getValue(self: Self) []u8 {
+            return switch (comptime config.value) {
+                .static => std.mem.asBytes(@constCast(&self.value))[0..self.getValueLength()],
+                .dynamic => block: {
+                    const start = switch (comptime config.key) {
+                        .static => 0,
+                        .dynamic => self.getKeyLength(),
+                    };
 
-pub fn should_inc_temp(config: Config, random_probability: f64) bool {
-    return random_probability < config.warm_up_probability;
-}
+                    break :block self.data[start .. start + self.getValueLength()];
+                },
+            };
+        }
 
-pub fn temp_inc(self: *Self) void {
-    self.temperature = Utils.saturating_add(u8, self.temperature, 1);
-}
+        pub fn compareValue(self: Self, value: []u8) bool {
+            const self_value = self.getValue();
 
-pub fn temp_dec(self: *Self) void {
-    self.temperature = Utils.saturating_sub(u8, self.temperature, 1);
-}
+            if (self_value.len != value.len) {
+                return false;
+            }
 
-pub fn deinit(self: Self, allocator: Allocator) void {
-    if (self.data) |buffer| {
-        allocator.free(buffer);
-    }
-}
+            return std.mem.eql(u8, self_value, value);
+        }
 
-pub const ErrorAssertKeyLength = error{
-    KeyTooShort,
-    KeyTooLong,
-};
+        pub inline fn isLucky(_: Self, random_probability: f64) bool {
+            return random_probability > config.temperature.rate;
+        }
 
-pub fn assert_key_length(key: []u8, config: Config) ErrorAssertKeyLength!void {
-    if (key.len > config.key_max_length) {
-        return error.KeyTooLong;
-    } else if (key.len == 0) {
-        return error.KeyTooShort;
-    }
-}
+        pub inline fn isUnlucky(self: Self, random_temperature: config.TemperatureType()) bool {
+            return random_temperature > CURVE[self.temperature];
+        }
 
-pub const ErrorAssertValueLength = error{
-    ValueTooShort,
-    ValueTooLong,
-};
+        pub inline fn getSiblingIndex(index: usize) usize {
+            return @min(index + 1, config.count - 1);
+        }
 
-pub fn assert_value_length(value: []u8, config: Config) ErrorAssertValueLength!void {
-    if (value.len > config.value_max_length) {
-        return error.ValueTooLong;
-    } else if (value.len == 0) {
-        return error.ValueTooShort;
-    }
-}
+        pub inline fn increaseTemperature(self: *Self) void {
+            const result = @addWithOverflow(self.temperature, 1);
 
-pub fn default() Self {
-    return Self{
-        .data = null,
-        .hash = null,
-        .temperature = Constants.TEMP_DEFAULT,
-        .key_length = 0,
-        .value_length = 0,
-        .ttl = 0,
+            self.temperature = switch (result[1]) {
+                1 => std.math.maxInt(config.TemperatureType()),
+                else => result[0],
+            };
+        }
+
+        pub inline fn decreaseTemperature(self: *Self) void {
+            const result = @subWithOverflow(self.temperature, 1);
+
+            self.temperature = switch (result[1]) {
+                1 => 0,
+                else => result[0],
+            };
+        }
+
+        pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8) !Self {
+            return Self{
+                .empty = false,
+                .hash = hash,
+                .key = config.key.createValue(key),
+                .key_length = config.key.createLength(key),
+                .value = config.value.createValue(value),
+                .value_length = config.value.createLength(value),
+                .total_length = config.createTotalLength(key, value),
+                .data = try config.createData(allocator, key, value),
+                .temperature = config.temperature.create(),
+            };
+        }
+
+        pub fn free(self: Self, allocator: Allocator) void {
+            if (comptime config.key == .dynamic or config.value == .dynamic) {
+                if (self.empty == false) {
+                    allocator.free(self.data[0..self.total_length]);
+                }
+            }
+        }
+
+        pub fn default() Self {
+            return Self{
+                .empty = true,
+                .hash = 0,
+                .key = config.key.defaultValue(),
+                .key_length = config.key.defaultLength(),
+                .value = config.value.defaultValue(),
+                .value_length = config.value.defaultLength(),
+                .total_length = config.defaultTotalLength(),
+                .data = config.defaultData(),
+                .temperature = config.temperature.default(),
+            };
+        }
     };
 }
 
-pub fn create(allocator: Allocator, hash: u64, key: []u8, value: []u8, ttl: ?u32) !Self {
-    var new_buffer = try allocator.alloc(u8, key.len + value.len);
+// test "Record" {
+//     const xxhash = std.hash.XxHash64.hash;
+//     const allocator = std.testing.allocator;
 
-    @memcpy(new_buffer[0..key.len], key);
-    @memcpy(new_buffer[key.len..], value);
+//     const config = Config{
+//         .hash = .{
+//             .type = u64,
+//         },
+//         .key = .{
+//             .dynamic = .{
+//                 .min_size = 1,
+//                 .max_size = 8,
+//             },
+//         },
+//         .value = .{
+//             .dynamic = .{
+//                 .min_size = 1,
+//                 .max_size = 65536,
+//             },
+//         },
+//         .temperature = .{
+//             .type = u8,
+//         },
+//     };
+//     const Record = create(config);
 
-    return Self{
-        .data = new_buffer,
-        .hash = hash,
-        .temperature = Constants.TEMP_DEFAULT,
-        .key_length = @intCast(key.len),
-        .value_length = @intCast(value.len),
-        .ttl = ttl_value(ttl),
-    };
-}
+//     _ = Record.default();
+
+//     const key_bytes = @as([]u8, @constCast("hello")[0..]);
+//     const value_bytes = @as([]u8, @constCast("world")[0..]);
+//     std.debug.print("key: {any}\n", .{key_bytes});
+//     std.debug.print("value: {any}\n", .{value_bytes});
+
+//     const hash = xxhash(0, key_bytes);
+//     const record = try Record.create(allocator, hash, key_bytes, value_bytes);
+//     defer allocator.free(record.data[0..record.total_length]);
+
+//     std.debug.print("Record key: {}\n", .{record.key});
+//     std.debug.print("getKey() result: {any}\n", .{record.getKey()});
+//     std.debug.print("Record value: {}\n", .{record.value});
+//     std.debug.print("getValue() result: {any}\n", .{record.getValue()});
+// }
