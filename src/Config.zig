@@ -1,106 +1,13 @@
 const std = @import("std");
 const Utils = @import("Utils.zig");
+const Hash = @import("Config/Hash.zig");
+const Data = @import("Config/Data.zig").Enum;
+const Temperature = @import("Config/Temperature.zig");
+const Padding = @import("Config/Padding.zig");
+const Strategy = @import("Config/Strategy.zig").Enum;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
-
-const Hash = struct {
-    type: type,
-};
-
-const Temperature = struct {
-    type: type,
-    rate: f64,
-
-    pub fn create(comptime self: Temperature) self.type {
-        return std.math.maxInt(self.type) / 2;
-    }
-
-    pub fn default(comptime self: Temperature) self.type {
-        return 0;
-    }
-};
-
-const Size = struct {
-    min_size: usize,
-    max_size: usize,
-};
-
-const Data = union(enum) {
-    static: Size,
-    dynamic: Size,
-
-    pub fn min_size(comptime self: Data) usize {
-        return switch (comptime self) {
-            .static => |s| s.min_size,
-            .dynamic => |s| s.min_size,
-        };
-    }
-
-    pub fn max_size(comptime self: Data) usize {
-        return switch (comptime self) {
-            .static => |s| s.max_size,
-            .dynamic => |s| s.max_size,
-        };
-    }
-
-    pub fn diff_size(comptime self: Data) usize {
-        return comptime (self.max_size() - self.min_size());
-    }
-
-    fn AbsoluteValueType(comptime self: Data) type {
-        return std.meta.Int(.unsigned, comptime self.max_size() * 8);
-    }
-
-    pub fn ValueType(comptime self: Data) type {
-        return switch (comptime self) {
-            .static => comptime self.AbsoluteValueType(),
-            .dynamic => void,
-        };
-    }
-
-    fn AbsoluteLengthType(comptime self: Data) type {
-        return std.meta.Int(.unsigned, Utils.bitsNeeded(comptime self.max_size()));
-    }
-
-    pub fn LengthType(comptime self: Data) type {
-        return switch (comptime self) {
-            .static => switch (comptime self.diff_size()) {
-                0 => void,
-                else => comptime self.AbsoluteLengthType(),
-            },
-            .dynamic => comptime self.AbsoluteLengthType(),
-        };
-    }
-
-    pub inline fn createValue(comptime self: Data, data: []u8) self.ValueType() {
-        return switch (comptime self) {
-            .static => std.mem.bytesToValue(comptime self.ValueType(), data),
-            .dynamic => {},
-        };
-    }
-
-    pub inline fn defaultValue(comptime self: Data) self.ValueType() {
-        return switch (comptime self) {
-            .static => 0,
-            .dynamic => {},
-        };
-    }
-
-    pub inline fn createLength(comptime self: Data, data: []u8) self.LengthType() {
-        return switch (comptime self.diff_size()) {
-            0 => {},
-            else => @intCast(data.len),
-        };
-    }
-
-    pub inline fn defaultLength(comptime self: Data) self.LengthType() {
-        return switch (comptime self.diff_size()) {
-            0 => {},
-            else => 0,
-        };
-    }
-};
 
 pub fn HashType(self: Self) type {
     return comptime self.hash.type;
@@ -123,47 +30,103 @@ pub fn ValueLengthType(self: Self) type {
 }
 
 pub fn TotalLengthType(self: Self) type {
-    if (comptime self.key == .dynamic or self.value == .dynamic) {
-        const key_size = switch (self.key.diff_size()) {
-            0 => 0,
-            else => self.key.max_size(),
-        };
-
-        const value_size = switch (self.value.diff_size()) {
-            0 => 0,
-            else => self.value.max_size(),
-        };
-
-        return std.meta.Int(.unsigned, Utils.bitsNeeded(key_size + value_size));
+    if (comptime self.key == .static and self.value == .static) {
+        return void;
     }
 
-    return void;
+    const key_length = switch (comptime self.key) {
+        .static => 0,
+        .dynamic => switch (comptime self.key.diff_size()) {
+            0 => 0,
+            else => self.key.max_size(),
+        },
+    };
+
+    const value_length = switch (comptime self.value) {
+        .static => 0,
+        .dynamic => switch (comptime self.value.diff_size()) {
+            0 => 0,
+            else => self.value.max_size(),
+        },
+    };
+
+    if (comptime key_length == 0 and value_length == 0) {
+        return void;
+    }
+
+    return std.meta.Int(.unsigned, Utils.bitsNeeded(key_length + value_length));
 }
 
 pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.TotalLengthType() {
-    if (comptime self.key == .dynamic or self.value == .dynamic) {
-        const key_length = switch (comptime self.key == .dynamic) {
-            true => key.len,
-            false => 0,
-        };
-
-        const value_length = switch (comptime self.value == .dynamic) {
-            true => value.len,
-            false => 0,
-        };
-
-        return @intCast(key_length + value_length);
+    if (comptime self.key == .static and self.value == .static) {
+        return {};
     }
 
-    return {};
+    const key_length = comptime switch (self.key) {
+        .static => 0,
+        .dynamic => switch (self.key.diff_size()) {
+            0 => 0,
+            else => 1,
+        },
+    };
+
+    const value_length = comptime switch (self.value) {
+        .static => 0,
+        .dynamic => switch (self.value.diff_size()) {
+            0 => 0,
+            else => 1,
+        },
+    };
+
+    if (comptime key_length == 0 and value_length == 0) {
+        return {};
+    }
+
+    const key_length_absolute = switch (comptime self.key) {
+        .static => 0,
+        .dynamic => switch (comptime self.key.diff_size()) {
+            0 => 0,
+            else => key.len,
+        },
+    };
+
+    const value_length_absolute = switch (comptime self.value) {
+        .static => 0,
+        .dynamic => switch (comptime self.value.diff_size()) {
+            0 => 0,
+            else => value.len,
+        },
+    };
+
+    return @intCast(key_length_absolute + value_length_absolute);
 }
 
 pub fn defaultTotalLength(comptime self: Self) self.TotalLengthType() {
-    if (comptime self.key == .dynamic or self.value == .dynamic) {
-        return 0;
+    if (comptime self.key == .static and self.value == .static) {
+        return {};
     }
 
-    return {};
+    const key_length = comptime switch (self.key) {
+        .static => 0,
+        .dynamic => switch (self.key.diff_size()) {
+            0 => 0,
+            else => self.key.max_size(),
+        },
+    };
+
+    const value_length = comptime switch (self.value) {
+        .static => 0,
+        .dynamic => switch (self.value.diff_size()) {
+            0 => 0,
+            else => self.value.max_size(),
+        },
+    };
+
+    if (comptime key_length == 0 and value_length == 0) {
+        return {};
+    }
+
+    return 0;
 }
 
 pub fn DataType(self: Self) type {
@@ -224,7 +187,8 @@ pub fn getIndex(comptime self: Self, hash: self.hash.type) usize {
 }
 
 count: usize,
-boltzmann: f64,
+strategy: Strategy,
+padding: Padding,
 hash: Hash,
 key: Data,
 value: Data,

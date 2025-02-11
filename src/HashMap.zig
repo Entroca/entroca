@@ -45,31 +45,30 @@ pub fn create(config: Config) type {
         }
 
         pub fn put(self: Self, hash: config.HashType(), key: []u8, value: []u8) !void {
+            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            try config.value.assertSize(value, error.ValueTooShort, error.ValueTooLong);
+
             const index = config.getIndex(hash);
             const record = self.records[index];
 
-            if (record.isEmpty() or record.compareHashAndKey(hash, key) or record.isUnlucky(block: {
-                var random = self.random;
-                break :block random.temperature();
-            })) {
+            if (record.isEmpty() or record.compareHashAndKey(hash, key) or record.isUnlucky(self)) {
                 record.free(self.allocator);
                 self.records[index] = try Record.create(self.allocator, hash, key, value);
+
+                return;
             }
+
+            return error.SlotUnavailable;
         }
 
-        pub fn get(self: Self, hash: config.HashType(), key: []u8) ![]u8 {
+        pub fn get(self: Self, hash: config.HashType(), key: []u8, buffer: []u8) ![]u8 {
+            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+
             const index = config.getIndex(hash);
             var record = self.records[index];
 
-            if (record.isEmpty()) {
-                return error.Empty;
-            }
-
-            if (record.compareHashAndKey(hash, key)) {
-                if (record.isLucky(block: {
-                    var random = self.random;
-                    break :block random.probability();
-                })) {
+            if (!record.isEmpty() and record.compareHashAndKey(hash, key)) {
+                if (record.isLucky(self)) {
                     record.increaseTemperature();
 
                     var sibling = self.records[Record.getSiblingIndex(index)];
@@ -77,18 +76,40 @@ pub fn create(config: Config) type {
                     sibling.decreaseTemperature();
                 }
 
-                return record.getValue();
+                const value = record.getValue();
+
+                @memcpy(buffer[0..value.len], value);
+
+                return buffer[0..value.len];
             }
 
-            return error.NoMatch;
+            return error.NotFound;
         }
 
         pub fn del(self: Self, hash: config.HashType(), key: []u8) !void {
+            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+
             const index = config.getIndex(hash);
             const record = self.records[index];
 
-            if (record.compareHashAndKey(hash, key)) {
+            if (!record.isEmpty() and record.compareHashAndKey(hash, key)) {
                 record.free(self.allocator);
+                self.records[index] = Record.default();
+
+                return;
+            }
+
+            return error.NotFound;
+        }
+
+        pub fn clr(self: Self) void {
+            if (comptime config.key == .dynamic or config.value == .dynamic) {
+                for (0..config.count) |index| {
+                    self.records[index].free(self.allocator);
+                }
+            }
+
+            for (0..config.count) |index| {
                 self.records[index] = Record.default();
             }
         }
@@ -101,12 +122,20 @@ test "HashMap" {
 
     const config = Config{
         .count = 1024,
-        .boltzmann = 32.0,
+        .strategy = .{
+            .boltzmann = .{
+                .constant = 32.0,
+            },
+        },
+        .padding = .{
+            .internal = true,
+            .external = true,
+        },
         .hash = .{
             .type = u64,
         },
         .key = .{
-            .dynamic = .{
+            .static = .{
                 .min_size = 1,
                 .max_size = 8,
             },
@@ -114,7 +143,7 @@ test "HashMap" {
         .value = .{
             .dynamic = .{
                 .min_size = 1,
-                .max_size = 65536,
+                .max_size = 8,
             },
         },
         .temperature = .{
@@ -122,20 +151,27 @@ test "HashMap" {
             .rate = 0.05,
         },
     };
+
     const HashMap = create(config);
     const Record = createRecord(config);
 
-    std.debug.print("Record size: {}\n", .{@sizeOf(Record)});
+    std.debug.print("Record size: {}\n", .{@bitSizeOf(Record)});
 
     const hash_map = try HashMap.init(allocator);
     defer hash_map.deinit();
 
-    const key = @as([]u8, @constCast("hello")[0..]);
-    const value = @as([]u8, @constCast("world")[0..]);
+    const key = @as([]u8, @constCast("helllolo")[0..]);
+    const value = @as([]u8, @constCast("worrldld")[0..]);
     const hash = xxhash(0, key);
+    const get_buffer = try allocator.alloc(u8, 8);
+    defer allocator.free(get_buffer);
 
     std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value)});
-    std.debug.print("get: {any}\n", .{hash_map.get(hash, key)});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
     std.debug.print("del: {any}\n", .{hash_map.del(hash, key)});
-    std.debug.print("get: {any}\n", .{hash_map.get(hash, key)});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
+    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value)});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
+    std.debug.print("clr: {any}\n", .{hash_map.clr()});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
 }

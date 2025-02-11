@@ -1,0 +1,2 @@
+internal: bool,
+external: bool,

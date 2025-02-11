@@ -5,8 +5,6 @@ const Utils = @import("Utils.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn create(config: Config) type {
-    // TODO: make sure all fields are padded
-    // and that the whole struct is padded
     return packed struct {
         const Self = @This();
 
@@ -20,7 +18,7 @@ pub fn create(config: Config) type {
         data: config.DataType(),
         temperature: config.TemperatureType(),
 
-        const CURVE = Utils.createBoltzmannCurve(config.TemperatureType(), config.boltzmann);
+        const CURVE = config.strategy.createCurve(config.TemperatureType());
 
         pub inline fn compareHash(self: Self, hash: config.HashType()) bool {
             return self.hash == hash;
@@ -39,12 +37,15 @@ pub fn create(config: Config) type {
 
         pub inline fn getKey(self: Self) []u8 {
             return switch (comptime config.key) {
-                .static => std.mem.asBytes(@constCast(&self.key))[0..self.getKeyLength()],
+                .static => block: {
+                    var key = self.key;
+                    break :block std.mem.asBytes(&key)[0..self.getKeyLength()];
+                },
                 .dynamic => self.data[0..self.getKeyLength()],
             };
         }
 
-        pub fn compareKey(self: Self, key: []u8) bool {
+        pub inline fn compareKey(self: Self, key: []u8) bool {
             const self_key = self.getKey();
 
             if (self_key.len != key.len) {
@@ -67,7 +68,10 @@ pub fn create(config: Config) type {
 
         pub inline fn getValue(self: Self) []u8 {
             return switch (comptime config.value) {
-                .static => std.mem.asBytes(@constCast(&self.value))[0..self.getValueLength()],
+                .static => block: {
+                    var value = self.value;
+                    break :block std.mem.asBytes(&value)[0..self.getValueLength()];
+                },
                 .dynamic => block: {
                     const start = switch (comptime config.key) {
                         .static => 0,
@@ -79,7 +83,7 @@ pub fn create(config: Config) type {
             };
         }
 
-        pub fn compareValue(self: Self, value: []u8) bool {
+        pub inline fn compareValue(self: Self, value: []u8) bool {
             const self_value = self.getValue();
 
             if (self_value.len != value.len) {
@@ -89,12 +93,34 @@ pub fn create(config: Config) type {
             return std.mem.eql(u8, self_value, value);
         }
 
-        pub inline fn isLucky(_: Self, random_probability: f64) bool {
-            return random_probability > config.temperature.rate;
+        pub inline fn getTotalLength(self: Self) usize {
+            if (comptime config.key == .static and config.value == .static) {
+                @compileError("To use getTotalLength at least one of key/value has to be .dynamic");
+            }
+
+            const key_length = switch (comptime config.key) {
+                .static => 0,
+                .dynamic => self.getKeyLength(),
+            };
+
+            const value_length = switch (comptime config.value) {
+                .static => 0,
+                .dynamic => self.getValueLength(),
+            };
+
+            return key_length + value_length;
         }
 
-        pub inline fn isUnlucky(self: Self, random_temperature: config.TemperatureType()) bool {
-            return random_temperature > CURVE[self.temperature];
+        pub inline fn isLucky(_: Self, hash_map: anytype) bool {
+            var random = hash_map.random;
+
+            return random.probability() > config.temperature.rate;
+        }
+
+        pub inline fn isUnlucky(self: Self, hash_map: anytype) bool {
+            var random = hash_map.random;
+
+            return random.temperature() > CURVE[self.temperature];
         }
 
         pub inline fn getSiblingIndex(index: usize) usize {
@@ -135,8 +161,8 @@ pub fn create(config: Config) type {
 
         pub fn free(self: Self, allocator: Allocator) void {
             if (comptime config.key == .dynamic or config.value == .dynamic) {
-                if (self.empty == false) {
-                    allocator.free(self.data[0..self.total_length]);
+                if (!self.empty) {
+                    allocator.free(self.data[0..self.getTotalLength()]);
                 }
             }
         }
@@ -156,46 +182,3 @@ pub fn create(config: Config) type {
         }
     };
 }
-
-// test "Record" {
-//     const xxhash = std.hash.XxHash64.hash;
-//     const allocator = std.testing.allocator;
-
-//     const config = Config{
-//         .hash = .{
-//             .type = u64,
-//         },
-//         .key = .{
-//             .dynamic = .{
-//                 .min_size = 1,
-//                 .max_size = 8,
-//             },
-//         },
-//         .value = .{
-//             .dynamic = .{
-//                 .min_size = 1,
-//                 .max_size = 65536,
-//             },
-//         },
-//         .temperature = .{
-//             .type = u8,
-//         },
-//     };
-//     const Record = create(config);
-
-//     _ = Record.default();
-
-//     const key_bytes = @as([]u8, @constCast("hello")[0..]);
-//     const value_bytes = @as([]u8, @constCast("world")[0..]);
-//     std.debug.print("key: {any}\n", .{key_bytes});
-//     std.debug.print("value: {any}\n", .{value_bytes});
-
-//     const hash = xxhash(0, key_bytes);
-//     const record = try Record.create(allocator, hash, key_bytes, value_bytes);
-//     defer allocator.free(record.data[0..record.total_length]);
-
-//     std.debug.print("Record key: {}\n", .{record.key});
-//     std.debug.print("getKey() result: {any}\n", .{record.getKey()});
-//     std.debug.print("Record value: {}\n", .{record.value});
-//     std.debug.print("getValue() result: {any}\n", .{record.getValue()});
-// }
