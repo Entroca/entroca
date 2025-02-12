@@ -57,8 +57,10 @@ pub fn create(comptime config: Config) type {
             const record = self.records[index];
 
             if (record.isEmpty() or record.compareHashAndKey(hash, key) or record.isUnlucky(self)) {
+                const new_record = try Record.create(self.allocator, hash, key, value);
+
                 record.free(self.allocator);
-                self.records[index] = try Record.create(self.allocator, hash, key, value);
+                self.records[index] = new_record;
 
                 return;
             }
