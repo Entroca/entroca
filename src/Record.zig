@@ -8,7 +8,7 @@ pub fn create(config: Config) type {
     return packed struct {
         const Self = @This();
 
-        empty: bool,
+        empty: config.EmptyType(),
         hash: config.HashType(),
         key: config.KeyType(),
         key_length: config.KeyLengthType(),
@@ -17,6 +17,27 @@ pub fn create(config: Config) type {
         total_length: config.TotalLengthType(),
         data: config.DataType(),
         temperature: config.TemperatureType(),
+        padding: switch (config.padding.external) {
+            true => block: {
+                const empty_size = @bitSizeOf(config.EmptyType());
+                const hash_size = @bitSizeOf(config.HashType());
+                const key_size = @bitSizeOf(config.KeyType());
+                const key_length_size = @bitSizeOf(config.KeyLengthType());
+                const value_size = @bitSizeOf(config.ValueType());
+                const value_length_size = @bitSizeOf(config.ValueLengthType());
+                const total_length_size = @bitSizeOf(config.TotalLengthType());
+                const data_size = @bitSizeOf(config.DataType());
+                const temperature_size = @bitSizeOf(config.TemperatureType());
+
+                const sum = empty_size + hash_size + key_size + key_length_size + value_size + value_length_size + total_length_size + data_size + temperature_size;
+
+                const rounded = Utils.closest16(sum);
+                const padding = rounded - sum;
+
+                break :block std.meta.Int(.unsigned, padding);
+            },
+            false => void,
+        },
 
         const CURVE = config.strategy.createCurve(config.TemperatureType());
 
@@ -25,7 +46,10 @@ pub fn create(config: Config) type {
         }
 
         pub inline fn isEmpty(self: Self) bool {
-            return self.empty == true;
+            return self.empty == comptime switch (config.padding.internal) {
+                true => 1,
+                false => true,
+            };
         }
 
         pub inline fn getKeyLength(self: Self) usize {
@@ -147,7 +171,7 @@ pub fn create(config: Config) type {
 
         pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8) !Self {
             return Self{
-                .empty = false,
+                .empty = config.createEmpty(false),
                 .hash = hash,
                 .key = config.key.createValue(key),
                 .key_length = config.key.createLength(key),
@@ -156,12 +180,16 @@ pub fn create(config: Config) type {
                 .total_length = config.createTotalLength(key, value),
                 .data = try config.createData(allocator, key, value),
                 .temperature = config.temperature.create(),
+                .padding = switch (config.padding.external) {
+                    true => 0,
+                    false => {},
+                },
             };
         }
 
         pub fn free(self: Self, allocator: Allocator) void {
             if (comptime config.key == .dynamic or config.value == .dynamic) {
-                if (!self.empty) {
+                if (!self.isEmpty()) {
                     allocator.free(self.data[0..self.getTotalLength()]);
                 }
             }
@@ -169,7 +197,7 @@ pub fn create(config: Config) type {
 
         pub fn default() Self {
             return Self{
-                .empty = true,
+                .empty = config.defaultEmpty(),
                 .hash = 0,
                 .key = config.key.defaultValue(),
                 .key_length = config.key.defaultLength(),
@@ -178,6 +206,10 @@ pub fn create(config: Config) type {
                 .total_length = config.defaultTotalLength(),
                 .data = config.defaultData(),
                 .temperature = config.temperature.default(),
+                .padding = switch (config.padding.external) {
+                    true => 0,
+                    false => {},
+                },
             };
         }
     };

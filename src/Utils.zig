@@ -5,6 +5,15 @@ pub fn bitsNeeded(comptime number: usize) u16 {
     return @bitSizeOf(@TypeOf(number)) - @clz(number);
 }
 
-pub fn isPowerOfTwo(n: usize) bool {
-    return n != 0 and (n & (n - 1)) == 0;
+pub fn closestN(comptime n: usize, comptime value: usize) usize {
+    if (value % n == 0) return value;
+    return value + (n - (value % n));
+}
+
+pub fn closest8(comptime value: usize) usize {
+    return comptime closestN(8, value);
+}
+
+pub fn closest16(comptime value: usize) usize {
+    return comptime closestN(16, value);
 }

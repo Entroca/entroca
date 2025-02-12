@@ -45,8 +45,13 @@ pub fn create(config: Config) type {
         }
 
         pub fn put(self: Self, hash: config.HashType(), key: []u8, value: []u8) !void {
-            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
-            try config.value.assertSize(value, error.ValueTooShort, error.ValueTooLong);
+            if (comptime config.features.assert_key_length) {
+                try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            }
+
+            if (comptime config.features.assert_value_length) {
+                try config.value.assertSize(value, error.ValueTooShort, error.ValueTooLong);
+            }
 
             const index = config.getIndex(hash);
             const record = self.records[index];
@@ -62,7 +67,9 @@ pub fn create(config: Config) type {
         }
 
         pub fn get(self: Self, hash: config.HashType(), key: []u8, buffer: []u8) ![]u8 {
-            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            if (comptime config.features.assert_key_length) {
+                try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            }
 
             const index = config.getIndex(hash);
             var record = self.records[index];
@@ -87,7 +94,9 @@ pub fn create(config: Config) type {
         }
 
         pub fn del(self: Self, hash: config.HashType(), key: []u8) !void {
-            try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            if (comptime config.features.assert_key_length) {
+                try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
+            }
 
             const index = config.getIndex(hash);
             const record = self.records[index];
@@ -131,6 +140,10 @@ test "HashMap" {
             .internal = true,
             .external = true,
         },
+        .features = .{
+            .assert_key_length = false,
+            .assert_value_length = false,
+        },
         .hash = .{
             .type = u64,
         },
@@ -155,7 +168,20 @@ test "HashMap" {
     const HashMap = create(config);
     const Record = createRecord(config);
 
-    std.debug.print("Record size: {}\n", .{@bitSizeOf(Record)});
+    std.debug.print("----- Record -----\n", .{});
+    std.debug.print("Record.empty: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .empty).type)});
+    std.debug.print("Record.hash: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .hash).type)});
+    std.debug.print("Record.key: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .key).type)});
+    std.debug.print("Record.key_length: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .key_length).type)});
+    std.debug.print("Record.value: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .value).type)});
+    std.debug.print("Record.value_length: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .value_length).type)});
+    std.debug.print("Record.total_length: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .total_length).type)});
+    std.debug.print("Record.data: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .data).type)});
+    std.debug.print("Record.temperature: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .temperature).type)});
+    std.debug.print("Record.padding: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .padding).type)});
+    std.debug.print("------------------\n", .{});
+    std.debug.print("Record: {}b\n", .{@bitSizeOf(Record)});
+    std.debug.print("------------------\n", .{});
 
     const hash_map = try HashMap.init(allocator);
     defer hash_map.deinit();
