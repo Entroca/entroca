@@ -76,7 +76,15 @@ pub fn create(comptime config: Config) type {
             const index = config.getIndex(hash);
             var record = self.records[index];
 
-            if (!record.isEmpty() and record.compareHashAndKey(hash, key)) {
+            if (record.isEmpty()) {
+                return error.NotFound;
+            }
+
+            if (record.isExpired()) {
+                return error.Expired;
+            }
+
+            if (record.compareHashAndKey(hash, key)) {
                 if (record.isLucky(self)) {
                     record.increaseTemperature();
 
@@ -92,7 +100,7 @@ pub fn create(comptime config: Config) type {
                 return buffer[0..value.len];
             }
 
-            return error.NotFound;
+            return error.NoMatch;
         }
 
         pub fn del(self: Self, hash: config.HashType(), key: []u8) !void {
@@ -200,7 +208,7 @@ test "HashMap" {
     const key = @as([]u8, @constCast("helllolo")[0..]);
     const value = @as([]u8, @constCast("worrldld")[0..]);
     const hash = xxhash(0, key);
-    const ttl: config.TtlInputType() = 10;
+    const ttl: config.TtlInputType() = 1;
     const get_buffer = try allocator.alloc(u8, 8);
     defer allocator.free(get_buffer);
 
@@ -211,5 +219,11 @@ test "HashMap" {
     std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value, ttl)});
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
     std.debug.print("clr: {any}\n", .{hash_map.clr()});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
+    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value, ttl)});
+    std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
+
+    std.time.sleep(2000 * 1000000);
+
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
 }

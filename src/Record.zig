@@ -165,6 +165,14 @@ pub fn create(comptime config: Config) type {
             };
         }
 
+        pub fn isExpired(self: Self) bool {
+            return switch (comptime config.ttl) {
+                .none => false,
+                .absolute => config.now() > self.ttl,
+                .relative => config.now() > self.ttl,
+            };
+        }
+
         pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8, ttl: config.TtlInputType()) !Self {
             return Self{
                 .empty = config.createEmpty(false),
