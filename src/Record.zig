@@ -4,7 +4,8 @@ const Utils = @import("Utils.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub fn create(config: Config) type {
+pub fn create(comptime config: Config) type {
+    // TODO: add ttl
     return packed struct {
         const Self = @This();
 
@@ -84,6 +85,13 @@ pub fn create(config: Config) type {
         }
 
         pub inline fn getValueLength(self: Self) usize {
+            if (comptime config.key == .dynamic and config.value == .dynamic and !config.features.no_total_length) {
+                return switch (comptime config.value.diff_size()) {
+                    0 => comptime config.value.max_size(),
+                    else => self.total_length,
+                };
+            }
+
             return switch (comptime config.value.diff_size()) {
                 0 => comptime config.value.max_size(),
                 else => self.value_length,
@@ -102,7 +110,7 @@ pub fn create(config: Config) type {
                         .dynamic => self.getKeyLength(),
                     };
 
-                    break :block self.data[start .. start + self.getValueLength()];
+                    break :block self.data[start..self.getTotalLength()];
                 },
             };
         }
@@ -120,6 +128,14 @@ pub fn create(config: Config) type {
         pub inline fn getTotalLength(self: Self) usize {
             if (comptime config.key == .static and config.value == .static) {
                 @compileError("To use getTotalLength at least one of key/value has to be .dynamic");
+            }
+
+            if (comptime config.key == .dynamic and config.value == .dynamic) {
+                if (comptime config.features.no_total_length) {
+                    return self.getKeyLength() + self.getValueLength();
+                } else {
+                    return self.total_length;
+                }
             }
 
             const key_length = switch (comptime config.key) {
@@ -176,7 +192,10 @@ pub fn create(config: Config) type {
                 .key = config.key.createValue(key),
                 .key_length = config.key.createLength(key),
                 .value = config.value.createValue(value),
-                .value_length = config.value.createLength(value),
+                .value_length = switch (comptime config.features.no_total_length and config.key == .dynamic and config.value == .dynamic) {
+                    true => config.value.createLength(value),
+                    false => {},
+                },
                 .total_length = config.createTotalLength(key, value),
                 .data = try config.createData(allocator, key, value),
                 .temperature = config.temperature.create(),
@@ -202,7 +221,10 @@ pub fn create(config: Config) type {
                 .key = config.key.defaultValue(),
                 .key_length = config.key.defaultLength(),
                 .value = config.value.defaultValue(),
-                .value_length = config.value.defaultLength(),
+                .value_length = switch (comptime config.features.no_total_length and config.key == .dynamic and config.value == .dynamic) {
+                    true => config.value.defaultLength(),
+                    false => {},
+                },
                 .total_length = config.defaultTotalLength(),
                 .data = config.defaultData(),
                 .temperature = config.temperature.default(),

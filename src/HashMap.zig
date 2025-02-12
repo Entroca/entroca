@@ -6,7 +6,7 @@ const createRandom = @import("Random.zig").create;
 
 const Allocator = std.mem.Allocator;
 
-pub fn create(config: Config) type {
+pub fn create(comptime config: Config) type {
     const Record = createRecord(config);
     const Random = createRandom(config);
 
@@ -143,12 +143,13 @@ test "HashMap" {
         .features = .{
             .assert_key_length = false,
             .assert_value_length = false,
+            .no_total_length = false,
         },
         .hash = .{
             .type = u64,
         },
         .key = .{
-            .static = .{
+            .dynamic = .{
                 .min_size = 1,
                 .max_size = 8,
             },

@@ -53,7 +53,11 @@ pub fn ValueType(self: Self) type {
     };
 }
 
-pub fn ValueLengthType(self: Self) type {
+pub fn ValueLengthType(comptime self: Self) type {
+    if (comptime self.key == .dynamic and self.value == .dynamic and !self.features.no_total_length) {
+        return void;
+    }
+
     const bits_needed = comptime Utils.bitsNeeded(self.value.max_size());
 
     return comptime switch (self.value.diff_size()) {
@@ -66,12 +70,12 @@ pub fn ValueLengthType(self: Self) type {
 }
 
 pub fn TotalLengthType(self: Self) type {
-    if (comptime self.key == .static and self.value == .static) {
+    if (comptime self.features.no_total_length or self.key == .static or self.value == .static) {
         return void;
     }
 
     const key_length = switch (comptime self.key) {
-        .static => 0,
+        .static => @compileError("Key has to be dynamic"),
         .dynamic => switch (comptime self.key.diff_size()) {
             0 => 0,
             else => self.key.max_size(),
@@ -79,7 +83,7 @@ pub fn TotalLengthType(self: Self) type {
     };
 
     const value_length = switch (comptime self.value) {
-        .static => 0,
+        .static => @compileError("Value has to be dynamic"),
         .dynamic => switch (comptime self.value.diff_size()) {
             0 => 0,
             else => self.value.max_size(),
@@ -107,12 +111,12 @@ pub fn DataType(self: Self) type {
 }
 
 pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.TotalLengthType() {
-    if (comptime self.key == .static and self.value == .static) {
+    if (comptime self.features.no_total_length or self.key == .static or self.value == .static) {
         return {};
     }
 
     const key_length = comptime switch (self.key) {
-        .static => 0,
+        .static => @compileError("Key has to be dynamic"),
         .dynamic => switch (self.key.diff_size()) {
             0 => 0,
             else => 1,
@@ -120,7 +124,7 @@ pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.Total
     };
 
     const value_length = comptime switch (self.value) {
-        .static => 0,
+        .static => @compileError("Value has to be dynamic"),
         .dynamic => switch (self.value.diff_size()) {
             0 => 0,
             else => 1,
@@ -132,7 +136,7 @@ pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.Total
     }
 
     const key_length_absolute = switch (comptime self.key) {
-        .static => 0,
+        .static => @compileError("Key has to be dynamic"),
         .dynamic => switch (comptime self.key.diff_size()) {
             0 => 0,
             else => key.len,
@@ -140,7 +144,7 @@ pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.Total
     };
 
     const value_length_absolute = switch (comptime self.value) {
-        .static => 0,
+        .static => @compileError("Value has to be dynamic"),
         .dynamic => switch (comptime self.value.diff_size()) {
             0 => 0,
             else => value.len,
@@ -151,12 +155,12 @@ pub fn createTotalLength(comptime self: Self, key: []u8, value: []u8) self.Total
 }
 
 pub fn defaultTotalLength(comptime self: Self) self.TotalLengthType() {
-    if (comptime self.key == .static and self.value == .static) {
+    if (comptime self.features.no_total_length or self.key == .static or self.value == .static) {
         return {};
     }
 
     const key_length = comptime switch (self.key) {
-        .static => 0,
+        .static => @compileError("Key has to be dynamic"),
         .dynamic => switch (self.key.diff_size()) {
             0 => 0,
             else => self.key.max_size(),
@@ -164,7 +168,7 @@ pub fn defaultTotalLength(comptime self: Self) self.TotalLengthType() {
     };
 
     const value_length = comptime switch (self.value) {
-        .static => 0,
+        .static => @compileError("Value has to be dynamic"),
         .dynamic => switch (self.value.diff_size()) {
             0 => 0,
             else => self.value.max_size(),

@@ -4,7 +4,7 @@ const Config = @import("Config.zig");
 const Allocator = std.mem.Allocator;
 const random = std.crypto.random;
 
-pub fn create(config: Config) type {
+pub fn create(comptime config: Config) type {
     return struct {
         const Self = @This();
 
