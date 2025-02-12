@@ -5,7 +5,6 @@ const Utils = @import("Utils.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn create(comptime config: Config) type {
-    // TODO: add ttl
     return packed struct {
         const Self = @This();
 
@@ -18,27 +17,8 @@ pub fn create(comptime config: Config) type {
         total_length: config.TotalLengthType(),
         data: config.DataType(),
         temperature: config.TemperatureType(),
-        padding: switch (config.padding.external) {
-            true => block: {
-                const empty_size = @bitSizeOf(config.EmptyType());
-                const hash_size = @bitSizeOf(config.HashType());
-                const key_size = @bitSizeOf(config.KeyType());
-                const key_length_size = @bitSizeOf(config.KeyLengthType());
-                const value_size = @bitSizeOf(config.ValueType());
-                const value_length_size = @bitSizeOf(config.ValueLengthType());
-                const total_length_size = @bitSizeOf(config.TotalLengthType());
-                const data_size = @bitSizeOf(config.DataType());
-                const temperature_size = @bitSizeOf(config.TemperatureType());
-
-                const sum = empty_size + hash_size + key_size + key_length_size + value_size + value_length_size + total_length_size + data_size + temperature_size;
-
-                const rounded = Utils.closest16(sum);
-                const padding = rounded - sum;
-
-                break :block std.meta.Int(.unsigned, padding);
-            },
-            false => void,
-        },
+        ttl: config.TtlTotalType(),
+        padding: config.PaddingType(),
 
         const CURVE = config.strategy.createCurve(config.TemperatureType());
 
@@ -185,24 +165,19 @@ pub fn create(comptime config: Config) type {
             };
         }
 
-        pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8) !Self {
+        pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8, ttl: config.TtlInputType()) !Self {
             return Self{
                 .empty = config.createEmpty(false),
                 .hash = hash,
                 .key = config.key.createValue(key),
                 .key_length = config.key.createLength(key),
                 .value = config.value.createValue(value),
-                .value_length = switch (comptime config.features.no_total_length and config.key == .dynamic and config.value == .dynamic) {
-                    true => config.value.createLength(value),
-                    false => {},
-                },
+                .value_length = config.createValueLength(value),
                 .total_length = config.createTotalLength(key, value),
                 .data = try config.createData(allocator, key, value),
                 .temperature = config.temperature.create(),
-                .padding = switch (config.padding.external) {
-                    true => 0,
-                    false => {},
-                },
+                .ttl = config.createTtlTotal(ttl),
+                .padding = config.defaultPadding(),
             };
         }
 
@@ -221,17 +196,12 @@ pub fn create(comptime config: Config) type {
                 .key = config.key.defaultValue(),
                 .key_length = config.key.defaultLength(),
                 .value = config.value.defaultValue(),
-                .value_length = switch (comptime config.features.no_total_length and config.key == .dynamic and config.value == .dynamic) {
-                    true => config.value.defaultLength(),
-                    false => {},
-                },
+                .value_length = config.defaultValueLength(),
                 .total_length = config.defaultTotalLength(),
                 .data = config.defaultData(),
                 .temperature = config.temperature.default(),
-                .padding = switch (config.padding.external) {
-                    true => 0,
-                    false => {},
-                },
+                .ttl = config.defaultTtlTotal(),
+                .padding = config.defaultPadding(),
             };
         }
     };

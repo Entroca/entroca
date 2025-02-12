@@ -44,7 +44,7 @@ pub fn create(comptime config: Config) type {
             self.random.deinit();
         }
 
-        pub fn put(self: Self, hash: config.HashType(), key: []u8, value: []u8) !void {
+        pub fn put(self: Self, hash: config.HashType(), key: []u8, value: []u8, ttl: config.TtlInputType()) !void {
             if (comptime config.features.assert_key_length) {
                 try config.key.assertSize(key, error.KeyTooShort, error.KeyTooLong);
             }
@@ -57,7 +57,7 @@ pub fn create(comptime config: Config) type {
             const record = self.records[index];
 
             if (record.isEmpty() or record.compareHashAndKey(hash, key) or record.isUnlucky(self)) {
-                const new_record = try Record.create(self.allocator, hash, key, value);
+                const new_record = try Record.create(self.allocator, hash, key, value, ttl);
 
                 record.free(self.allocator);
                 self.records[index] = new_record;
@@ -166,6 +166,13 @@ test "HashMap" {
             .type = u8,
             .rate = 0.05,
         },
+        .ttl = .{
+            .absolute = .{
+                .resolution = .second,
+                .max_input_count = 4194304,
+                .max_total_count = 4294967296,
+            },
+        },
     };
 
     const HashMap = create(config);
@@ -181,6 +188,7 @@ test "HashMap" {
     std.debug.print("Record.total_length: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .total_length).type)});
     std.debug.print("Record.data: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .data).type)});
     std.debug.print("Record.temperature: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .temperature).type)});
+    std.debug.print("Record.ttl: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .ttl).type)});
     std.debug.print("Record.padding: {}b\n", .{@bitSizeOf(std.meta.fieldInfo(Record, .padding).type)});
     std.debug.print("------------------\n", .{});
     std.debug.print("Record: {}b\n", .{@bitSizeOf(Record)});
@@ -192,14 +200,15 @@ test "HashMap" {
     const key = @as([]u8, @constCast("helllolo")[0..]);
     const value = @as([]u8, @constCast("worrldld")[0..]);
     const hash = xxhash(0, key);
+    const ttl: config.TtlInputType() = 10;
     const get_buffer = try allocator.alloc(u8, 8);
     defer allocator.free(get_buffer);
 
-    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value)});
+    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value, ttl)});
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
     std.debug.print("del: {any}\n", .{hash_map.del(hash, key)});
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
-    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value)});
+    std.debug.print("put: {any}\n", .{hash_map.put(hash, key, value, ttl)});
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});
     std.debug.print("clr: {any}\n", .{hash_map.clr()});
     std.debug.print("get: {any}\n", .{hash_map.get(hash, key, get_buffer)});

@@ -6,6 +6,7 @@ const Temperature = @import("Config/Temperature.zig");
 const Padding = @import("Config/Padding.zig");
 const Strategy = @import("Config/Strategy.zig").Enum;
 const Features = @import("Config/Features.zig");
+const Ttl = @import("Config/Ttl.zig").Enum;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -17,7 +18,7 @@ pub fn EmptyType(comptime self: Self) type {
     };
 }
 
-pub fn HashType(self: Self) type {
+pub fn HashType(comptime self: Self) type {
     return comptime self.hash.type;
 }
 
@@ -43,7 +44,7 @@ pub fn KeyLengthType(comptime self: Self) type {
     };
 }
 
-pub fn ValueType(self: Self) type {
+pub fn ValueType(comptime self: Self) type {
     return comptime switch (self.value) {
         .static => std.meta.Int(.unsigned, switch (self.padding.internal) {
             true => Utils.closest8(self.value.max_size()),
@@ -69,7 +70,7 @@ pub fn ValueLengthType(comptime self: Self) type {
     };
 }
 
-pub fn TotalLengthType(self: Self) type {
+pub fn TotalLengthType(comptime self: Self) type {
     if (comptime self.features.no_total_length or self.key == .static or self.value == .static) {
         return void;
     }
@@ -102,7 +103,7 @@ pub fn TotalLengthType(self: Self) type {
     });
 }
 
-pub fn DataType(self: Self) type {
+pub fn DataType(comptime self: Self) type {
     if (comptime self.key == .dynamic or self.value == .dynamic) {
         return [*]u8;
     }
@@ -219,8 +220,107 @@ pub fn defaultData(comptime self: Self) self.DataType() {
     return {};
 }
 
-pub fn TemperatureType(self: Self) type {
+pub fn TemperatureType(comptime self: Self) type {
     return self.temperature.type;
+}
+
+pub fn TtlInputType(comptime self: Self) type {
+    return comptime switch (self.ttl) {
+        .none => void,
+        .absolute => |s| block: {
+            const bits_needed = Utils.bitsNeeded(s.max_input_count);
+
+            break :block std.meta.Int(.unsigned, switch (self.padding.internal) {
+                true => Utils.closest8(bits_needed),
+                false => bits_needed,
+            });
+        },
+        .relative => |s| block: {
+            const bits_needed = Utils.bitsNeeded(s.max_input_count);
+
+            break :block std.meta.Int(.unsigned, switch (self.padding.internal) {
+                true => Utils.closest8(bits_needed),
+                false => bits_needed,
+            });
+        },
+    };
+}
+
+pub fn TtlTotalType(comptime self: Self) type {
+    return comptime switch (self.ttl) {
+        .none => void,
+        .absolute => |s| block: {
+            const bits_needed = Utils.bitsNeeded(s.max_total_count);
+
+            break :block std.meta.Int(.unsigned, switch (self.padding.internal) {
+                true => Utils.closest8(bits_needed),
+                false => bits_needed,
+            });
+        },
+        .relative => |s| block: {
+            const bits_needed = Utils.bitsNeeded(s.max_total_count);
+
+            break :block std.meta.Int(.unsigned, switch (self.padding.internal) {
+                true => Utils.closest8(bits_needed),
+                false => bits_needed,
+            });
+        },
+    };
+}
+
+pub fn createTtlTotal(comptime self: Self, input: self.TtlInputType()) self.TtlTotalType() {
+    return switch (comptime self.ttl) {
+        .none => {},
+        .absolute => self.now() + @as(self.TtlTotalType(), input),
+        .relative => self.now() + @as(self.TtlTotalType(), input),
+    };
+}
+
+pub fn defaultTtlTotal(comptime self: Self) self.TtlTotalType() {
+    return comptime switch (self.ttl) {
+        .none => {},
+        .absolute => std.math.maxInt(self.TtlTotalType()),
+        .relative => std.math.maxInt(self.TtlTotalType()),
+    };
+}
+
+pub fn now(comptime self: Self) self.TtlTotalType() {
+    return switch (comptime self.ttl) {
+        .none => {},
+        .absolute => @intCast(std.time.timestamp()),
+        .relative => @intCast(std.time.timestamp()),
+    };
+}
+
+pub fn PaddingType(comptime self: Self) type {
+    return comptime switch (self.padding.external) {
+        true => block: {
+            const empty_size = @bitSizeOf(self.EmptyType());
+            const hash_size = @bitSizeOf(self.HashType());
+            const key_size = @bitSizeOf(self.KeyType());
+            const key_length_size = @bitSizeOf(self.KeyLengthType());
+            const value_size = @bitSizeOf(self.ValueType());
+            const value_length_size = @bitSizeOf(self.ValueLengthType());
+            const total_length_size = @bitSizeOf(self.TotalLengthType());
+            const data_size = @bitSizeOf(self.DataType());
+            const temperature_size = @bitSizeOf(self.TemperatureType());
+
+            const sum = empty_size + hash_size + key_size + key_length_size + value_size + value_length_size + total_length_size + data_size + temperature_size;
+
+            const rounded = Utils.closest16(sum);
+            const padding = rounded - sum;
+
+            break :block std.meta.Int(.unsigned, padding);
+        },
+        false => void,
+    };
+}
+
+pub fn defaultPadding(comptime self: Self) self.PaddingType() {
+    return comptime switch (self.padding.external) {
+        true => 0,
+        false => {},
+    };
 }
 
 pub fn getIndex(comptime self: Self, hash: self.hash.type) usize {
@@ -242,6 +342,20 @@ pub fn defaultEmpty(comptime self: Self) self.EmptyType() {
     return comptime self.createEmpty(true);
 }
 
+pub fn defaultValueLength(comptime self: Self) self.ValueLengthType() {
+    return comptime switch (self.features.no_total_length and self.key == .dynamic and self.value == .dynamic) {
+        true => self.value.defaultLength(),
+        false => {},
+    };
+}
+
+pub fn createValueLength(comptime self: Self, value: []u8) self.ValueLengthType() {
+    return switch (comptime self.features.no_total_length and self.key == .dynamic and self.value == .dynamic) {
+        true => self.value.createLength(value),
+        false => {},
+    };
+}
+
 count: usize,
 strategy: Strategy,
 padding: Padding,
@@ -250,3 +364,4 @@ key: Data,
 value: Data,
 temperature: Temperature,
 features: Features,
+ttl: Ttl,
