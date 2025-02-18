@@ -38,6 +38,20 @@ pub fn Struct(config: Config) type {
         ttl: Ttl.Type(),
         padding: Padding.Type(),
 
+        const CURVE = block: {
+            const size = std.math.maxInt(Temp.Type()) + 1;
+            var table: [size]Temp.Type() = undefined;
+
+            for (0..size) |index| {
+                const temp: f64 = @floatFromInt(index);
+                const prob = @exp(-temp / 32.0);
+
+                table[index] = @intFromFloat(prob * @as(f64, @floatFromInt(std.math.maxInt(Temp.Type()))));
+            }
+
+            break :block table;
+        };
+
         pub inline fn isEmpty(self: *const Self) bool {
             return self.empty == 1;
         }
@@ -64,6 +78,10 @@ pub fn Struct(config: Config) type {
 
         pub fn shouldWarmUp(probability: f64) bool {
             return probability < config.record.temp.rate;
+        }
+
+        pub fn shouldRewrite(self: *const Self, random_temperature: Temp.Type()) bool {
+            return random_temperature > CURVE[self.temp];
         }
 
         pub fn siblingIndex(index: usize) usize {

@@ -83,7 +83,10 @@ pub fn Struct(comptime config: Config, allocator: Allocator) type {
             const index = getIndex(hash);
             const record = self.records[index];
 
-            if (record.isEmpty() or record.matches(hash, key)) {
+            if (record.isEmpty() or record.matches(hash, key) or record.shouldRewrite(block: {
+                var random = self.random;
+                break :block random.temperature();
+            })) {
                 const new_record = try Record.create(self.allocator, hash, key, value, ttl);
 
                 self.records[index].free(self.allocator);
