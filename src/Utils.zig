@@ -17,3 +17,10 @@ pub fn closest8(comptime value: usize) usize {
 pub fn closest16(comptime value: usize) usize {
     return comptime closestN(16, value);
 }
+
+pub fn uint(comptime bits: usize, comptime padding: bool) type {
+    return comptime std.meta.Int(.unsigned, switch (padding) {
+        true => closest8(bits),
+        false => bits,
+    });
+}

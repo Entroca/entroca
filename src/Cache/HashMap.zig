@@ -147,8 +147,8 @@ test "HashMap" {
             },
         },
         .padding = .{
-            .internal = true,
-            .external = true,
+            .internal = false,
+            .external = false,
         },
         .features = .{
             .assert_key_length = false,
@@ -159,7 +159,7 @@ test "HashMap" {
             .type = u64,
         },
         .key = .{
-            .dynamic = .{
+            .static = .{
                 .min_size = 1,
                 .max_size = 8,
             },
@@ -182,6 +182,8 @@ test "HashMap" {
             },
         },
     };
+
+    const Controller = createController(config);
 
     const HashMap = create(config);
     const Record = createRecord(config);

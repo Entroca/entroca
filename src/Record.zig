@@ -1,216 +1,166 @@
 const std = @import("std");
 const Config = @import("Config.zig");
-const Utils = @import("Utils.zig");
+const ConfigRecord = @import("Config/Record.zig");
+const createEmpty = @import("Record/Empty.zig").Struct;
+const createHash = @import("Record/Hash.zig").Struct;
+const createDataValue = @import("Record/DataValue.zig").Struct;
+const createDataLength = @import("Record/DataLength.zig").Struct;
+const createDataPointer = @import("Record/DataPointer.zig").Struct;
+const createTemp = @import("Record/Temp.zig").Struct;
+const createTtl = @import("Record/Ttl.zig").Struct;
+const createPadding = @import("Record/Padding.zig").Struct;
 
 const Allocator = std.mem.Allocator;
 
-pub fn create(comptime config: Config) type {
+pub fn Struct(config: Config) type {
+    const Empty = createEmpty(config.record);
+    const Hash = createHash(config.record);
+    const Key = createDataValue(config.record, config.record.key);
+    const KeyLength = createDataLength(config.record, config.record.key);
+    const Value = createDataValue(config.record, config.record.value);
+    const ValueLength = createDataLength(config.record, config.record.value);
+    const Data = createDataPointer(config.record);
+    const Temp = createTemp(config.record);
+    const Ttl = createTtl(config.record);
+    const Padding = createPadding(config.record);
+
     return packed struct {
         const Self = @This();
 
-        empty: config.EmptyType(),
-        hash: config.HashType(),
-        key: config.KeyType(),
-        key_length: config.KeyLengthType(),
-        value: config.ValueType(),
-        value_length: config.ValueLengthType(),
-        total_length: config.TotalLengthType(),
-        data: config.DataType(),
-        temperature: config.TemperatureType(),
-        ttl: config.TtlTotalType(),
-        padding: config.PaddingType(),
+        empty: Empty.Type(),
+        hash: Hash.Type(),
+        key: Key.Type(),
+        key_length: KeyLength.Type(),
+        value: Value.Type(),
+        value_length: ValueLength.Type(),
+        data: Data.Type(),
+        temp: Temp.Type(),
+        ttl: Ttl.Type(),
+        padding: Padding.Type(),
 
-        const CURVE = config.strategy.createCurve(config.TemperatureType());
+        pub inline fn isEmpty(self: *const Self) bool {
+            return self.empty == 1;
+        }
 
-        pub inline fn compareHash(self: Self, hash: config.HashType()) bool {
+        pub inline fn isExpired(self: *const Self) bool {
+            return Ttl.isExpired(self.ttl);
+        }
+
+        pub inline fn compareHash(self: *const Self, hash: Hash.Type()) bool {
             return self.hash == hash;
         }
 
-        pub inline fn isEmpty(self: Self) bool {
-            return self.empty == comptime switch (config.padding.internal) {
-                true => 1,
-                false => true,
-            };
+        pub inline fn getKey(self: *const Self) []u8 {
+            return Key.get(self.data, self.key, KeyLength.get(self.key_length));
         }
 
-        pub inline fn getKeyLength(self: Self) usize {
-            return switch (comptime config.key.diff_size()) {
-                0 => comptime config.key.max_size(),
-                else => self.key_length,
-            };
+        pub fn compareKey(self: *const Self, key: []u8) bool {
+            return std.mem.eql(u8, self.getKey(), key);
         }
 
-        pub inline fn getKey(self: Self) []u8 {
-            return switch (comptime config.key) {
-                .static => block: {
-                    var key = self.key;
-                    break :block std.mem.asBytes(&key)[0..self.getKeyLength()];
-                },
-                .dynamic => self.data[0..self.getKeyLength()],
-            };
-        }
-
-        pub inline fn compareKey(self: Self, key: []u8) bool {
-            const self_key = self.getKey();
-
-            if (self_key.len != key.len) {
-                return false;
-            }
-
-            return std.mem.eql(u8, self_key, key);
-        }
-
-        pub inline fn compareHashAndKey(self: Self, hash: config.HashType(), key: []u8) bool {
+        pub fn matches(self: *const Self, hash: Hash.Type(), key: []u8) bool {
             return self.compareHash(hash) and self.compareKey(key);
         }
 
-        pub inline fn getValueLength(self: Self) usize {
-            if (comptime config.key == .dynamic and config.value == .dynamic and !config.features.no_total_length) {
-                return switch (comptime config.value.diff_size()) {
-                    0 => comptime config.value.max_size(),
-                    else => self.total_length,
-                };
-            }
-
-            return switch (comptime config.value.diff_size()) {
-                0 => comptime config.value.max_size(),
-                else => self.value_length,
-            };
+        pub fn shouldWarmUp(probability: f64) bool {
+            return probability < config.record.temp.rate;
         }
 
-        pub inline fn getValue(self: Self) []u8 {
-            return switch (comptime config.value) {
-                .static => block: {
-                    var value = self.value;
-                    break :block std.mem.asBytes(&value)[0..self.getValueLength()];
-                },
-                .dynamic => block: {
-                    const start = switch (comptime config.key) {
-                        .static => 0,
-                        .dynamic => self.getKeyLength(),
-                    };
-
-                    break :block self.data[start..self.getTotalLength()];
-                },
-            };
+        pub fn siblingIndex(index: usize) usize {
+            return @min(index + 1, config.cache.count - 1);
         }
 
-        pub inline fn compareValue(self: Self, value: []u8) bool {
-            const self_value = self.getValue();
+        pub fn increaseTemperature(self: *Self) void {
+            const result = @addWithOverflow(self.temp, 1);
 
-            if (self_value.len != value.len) {
-                return false;
-            }
-
-            return std.mem.eql(u8, self_value, value);
-        }
-
-        pub inline fn getTotalLength(self: Self) usize {
-            if (comptime config.key == .static and config.value == .static) {
-                @compileError("To use getTotalLength at least one of key/value has to be .dynamic");
-            }
-
-            if (comptime config.key == .dynamic and config.value == .dynamic) {
-                if (comptime config.features.no_total_length) {
-                    return self.getKeyLength() + self.getValueLength();
-                } else {
-                    return self.total_length;
-                }
-            }
-
-            const key_length = switch (comptime config.key) {
-                .static => 0,
-                .dynamic => self.getKeyLength(),
-            };
-
-            const value_length = switch (comptime config.value) {
-                .static => 0,
-                .dynamic => self.getValueLength(),
-            };
-
-            return key_length + value_length;
-        }
-
-        pub inline fn isLucky(_: Self, hash_map: anytype) bool {
-            var random = hash_map.random;
-
-            return random.probability() > config.temperature.rate;
-        }
-
-        pub inline fn isUnlucky(self: Self, hash_map: anytype) bool {
-            var random = hash_map.random;
-
-            return random.temperature() > CURVE[self.temperature];
-        }
-
-        pub inline fn getSiblingIndex(index: usize) usize {
-            return @min(index + 1, config.count - 1);
-        }
-
-        pub inline fn increaseTemperature(self: *Self) void {
-            const result = @addWithOverflow(self.temperature, 1);
-
-            self.temperature = switch (result[1]) {
-                1 => std.math.maxInt(config.TemperatureType()),
+            self.temp = switch (result[1]) {
+                1 => std.math.maxInt(config.record.temp.type),
                 else => result[0],
             };
         }
 
-        pub inline fn decreaseTemperature(self: *Self) void {
-            const result = @subWithOverflow(self.temperature, 1);
+        pub fn decreaseTemperature(self: *Self) void {
+            const result = @subWithOverflow(self.temp, 1);
 
-            self.temperature = switch (result[1]) {
+            self.temp = switch (result[1]) {
                 1 => 0,
                 else => result[0],
             };
         }
 
-        pub fn isExpired(self: Self) bool {
-            return switch (comptime config.ttl) {
-                .none => false,
-                .absolute => config.now() > self.ttl,
-                .relative => config.now() > self.ttl,
-            };
+        pub inline fn getValue(self: *const Self) []u8 {
+            return Value.get(self.data, self.value, ValueLength.get(self.value_length));
         }
 
-        pub fn create(allocator: Allocator, hash: config.HashType(), key: []u8, value: []u8, ttl: config.TtlInputType()) !Self {
+        pub fn compareValue(self: *const Self, value: []u8) bool {
+            return std.mem.eql(u8, self.getValue(), value);
+        }
+
+        pub fn free(self: *const Self, allocator: Allocator) void {
+            return Data.free(allocator, self.isEmpty(), self.data, KeyLength.get(self.key_length), ValueLength.get(self.value_length));
+        }
+
+        pub inline fn create(allocator: Allocator, hash: Hash.Type(), key: []u8, value: []u8, ttl: Ttl.Type()) !Self {
             return Self{
-                .empty = config.createEmpty(false),
+                .empty = Empty.create(false),
                 .hash = hash,
-                .key = config.key.createValue(key),
-                .key_length = config.key.createLength(key),
-                .value = config.value.createValue(value),
-                .value_length = config.createValueLength(value),
-                .total_length = config.createTotalLength(key, value),
-                .data = try config.createData(allocator, key, value),
-                .temperature = config.temperature.create(),
-                .ttl = config.createTtlTotal(ttl),
-                .padding = config.defaultPadding(),
+                .key = Key.create(key),
+                .key_length = KeyLength.create(key.len),
+                .value = Value.create(value),
+                .value_length = ValueLength.create(value.len),
+                .data = try Data.create(allocator, key, value),
+                .temp = Temp.default(),
+                .ttl = Ttl.create(ttl),
+                .padding = Padding.default(),
             };
         }
 
-        pub fn free(self: Self, allocator: Allocator) void {
-            if (comptime config.key == .dynamic or config.value == .dynamic) {
-                if (!self.isEmpty()) {
-                    allocator.free(self.data[0..self.getTotalLength()]);
-                }
-            }
-        }
-
-        pub fn default() Self {
+        pub inline fn default() Self {
             return Self{
-                .empty = config.defaultEmpty(),
-                .hash = 0,
-                .key = config.key.defaultValue(),
-                .key_length = config.key.defaultLength(),
-                .value = config.value.defaultValue(),
-                .value_length = config.defaultValueLength(),
-                .total_length = config.defaultTotalLength(),
-                .data = config.defaultData(),
-                .temperature = config.temperature.default(),
-                .ttl = config.defaultTtlTotal(),
-                .padding = config.defaultPadding(),
+                .empty = Empty.default(),
+                .hash = Hash.default(),
+                .key = Key.default(),
+                .key_length = KeyLength.default(),
+                .value = Value.default(),
+                .value_length = ValueLength.default(),
+                .data = Data.default(),
+                .temp = Temp.default(),
+                .ttl = Ttl.default(),
+                .padding = Padding.default(),
             };
         }
     };
+}
+
+test "Record" {
+    _ = @import("Record/Empty.zig");
+    _ = @import("Record/Hash.zig");
+    _ = @import("Record/DataValue.zig");
+    _ = @import("Record/DataLength.zig");
+    _ = @import("Record/DataPointer.zig");
+    _ = @import("Record/Temp.zig");
+    _ = @import("Record/Ttl.zig");
+    _ = @import("Record/Padding.zig");
+
+    const Testing = @import("Testing.zig");
+    const allocator = std.testing.allocator;
+    const expect = std.testing.expect;
+    const xxhash = std.hash.XxHash64.hash;
+
+    const Record = Struct(Config.default());
+
+    const key = try Testing.randomString(allocator, 5);
+    defer allocator.free(key);
+    const value = try Testing.randomString(allocator, 5);
+    defer allocator.free(value);
+    const hash = xxhash(0, key);
+
+    const record = try Record.create(allocator, hash, key, value, 1);
+    defer allocator.free(record.data[0..5]);
+
+    try expect(record.compareHash(hash));
+    try expect(std.mem.eql(u8, key, record.getKey()));
+    try expect(record.compareKey(key));
+    try expect(std.mem.eql(u8, value, record.getValue()));
+    try expect(record.compareValue(value));
 }
