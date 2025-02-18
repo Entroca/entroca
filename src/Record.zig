@@ -9,6 +9,7 @@ const createDataPointer = @import("Record/DataPointer.zig").Struct;
 const createTemp = @import("Record/Temp.zig").Struct;
 const createTtl = @import("Record/Ttl.zig").Struct;
 const createPadding = @import("Record/Padding.zig").Struct;
+const Curve = @import("Record/Curve.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -38,19 +39,7 @@ pub fn Struct(config: Config) type {
         ttl: Ttl.Type(),
         padding: Padding.Type(),
 
-        const CURVE = block: {
-            const size = std.math.maxInt(Temp.Type()) + 1;
-            var table: [size]Temp.Type() = undefined;
-
-            for (0..size) |index| {
-                const temp: f64 = @floatFromInt(index);
-                const prob = @exp(-temp / 32.0);
-
-                table[index] = @intFromFloat(prob * @as(f64, @floatFromInt(std.math.maxInt(Temp.Type()))));
-            }
-
-            break :block table;
-        };
+        const CURVE = Curve.create(Temp.Type());
 
         pub inline fn isEmpty(self: *const Self) bool {
             return self.empty == 1;
