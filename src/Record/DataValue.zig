@@ -19,16 +19,6 @@ pub fn Struct(config_record: ConfigRecord, config_data: ConfigData) type {
             };
         }
 
-        pub fn assertSize(length: usize) !void {
-            if (length < minSize()) {
-                return error.DataTooSmall;
-            }
-
-            if (length > maxSize()) {
-                return error.DataTooLarge;
-            }
-        }
-
         pub fn Type() type {
             if (comptime config_data == .dynamic) {
                 return void;
@@ -61,6 +51,22 @@ pub fn Struct(config_record: ConfigRecord, config_data: ConfigData) type {
                 },
                 .dynamic => data[0..length],
             };
+        }
+
+        pub fn byteSize() usize {
+            return comptime maxSize();
+        }
+
+        pub fn decode(buffer: []u8, index: *usize) []u8 {
+            const length = std.mem.readInt(u32, buffer[index.*..][0..4], .little);
+
+            index.* += 4;
+
+            const result = buffer[index.*..][0..length];
+
+            index.* += length;
+
+            return result;
         }
     };
 }

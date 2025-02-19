@@ -39,6 +39,23 @@ pub fn Struct(comptime config_record: ConfigRecord) type {
                 .none => {},
             };
         }
+
+        pub fn byteSize() usize {
+            return comptime @sizeOf(Type());
+        }
+
+        pub fn decode(buffer: []u8, index: *usize) Type() {
+            return switch (comptime config_record.ttl) {
+                .absolute => block: {
+                    const result = std.mem.readInt(Type(), buffer[index.*..][0..comptime byteSize()], .little);
+
+                    index.* += comptime byteSize();
+
+                    break :block result;
+                },
+                .none => {},
+            };
+        }
     };
 }
 

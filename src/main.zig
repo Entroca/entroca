@@ -1,10 +1,14 @@
+const std = @import("std");
 const Config = @import("Config.zig");
-const createServer = @import("Server.zig");
+const createServer = @import("Server.zig").Struct;
 
-pub fn main(config: Config) !void {
-    const Server = createServer(config);
-    const server = Server.init();
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const Server = createServer(Config.default());
+    const server = try Server.init(allocator);
     defer server.deinit();
 
-    server.start();
+    try server.start();
 }
