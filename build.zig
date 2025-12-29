@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "hashmap",
+        .name = "entroca",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const exe_check = b.addExecutable(.{
-        .name = "hashmap",
+        .name = "entroca",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -27,6 +27,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const check = b.step("check", "Check if hashmap compiles");
+    const check = b.step("check", "Check if project compiles");
     check.dependOn(&exe_check.step);
 }

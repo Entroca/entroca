@@ -49,28 +49,62 @@ pub fn Struct(comptime config: Config) type {
         }
 
         pub fn start(self: *const Self) !void {
-            const server_address = try std.net.Address.parseIp("127.0.0.1", config.server.port);
-            var server = try server_address.listen(.{});
+            const server_address = std.net.Address.parseIp("127.0.0.1", config.server.port) catch {
+                std.debug.print("[ERROR] Parse IP error\n", .{});
+                return;
+            };
 
-            const client_connection = try server.accept();
+            var server = server_address.listen(.{}) catch {
+                std.debug.print("[ERROR] Listen error\n", .{});
+                return;
+            };
+
+            const client_connection = server.accept() catch {
+                std.debug.print("[ERROR] Accept error\n", .{});
+                return;
+            };
+
+            std.debug.print("[INFO] Connection estabilished on port {}\n", .{config.server.port});
+
             defer client_connection.stream.close();
 
-            _ = try client_connection.stream.writeAll(self.conn_buffer);
+            // _ = try client_connection.stream.writeAll(self.conn_buffer);
 
             while (true) {
-                if (client_connection.stream.read(self.input_buffer) catch break == 0) break;
-                _ = try self.call(client_connection);
+                const bytes_read = client_connection.stream.read(self.input_buffer) catch {
+                    std.debug.print("[ERROR] Read error\n", .{});
+                    break;
+                };
+
+                if (bytes_read == 0) {
+                    std.debug.print("[ERROR] Read zero\n", .{});
+                    break;
+                }
+
+                std.debug.print("[INFO] Input data {any}\n", .{self.input_buffer[0..bytes_read]});
+
+                self.call(client_connection) catch {
+                    std.debug.print("[ERROR] Write error\n", .{});
+                    break;
+                };
             }
         }
 
         inline fn call(self: *const Self, client_connection: std.net.Server.Connection) !void {
             switch (self.input_buffer[0]) {
-                0 => self.handlePut() catch {},
+                0 => self.handlePut() catch {
+                    std.debug.print("[ERROR] Call put\n", .{});
+                },
                 1 => self.handleGet(client_connection) catch {
+                    std.debug.print("[ERROR] Call get\n", .{});
                     try self.writeError(client_connection);
                 },
-                2 => self.handleDel() catch {},
-                else => {},
+                2 => self.handleDel() catch {
+                    std.debug.print("[ERROR] Call del\n", .{});
+                },
+                else => {
+                    std.debug.print("[WARNING] Call unknown\n", .{});
+                },
             }
         }
 
